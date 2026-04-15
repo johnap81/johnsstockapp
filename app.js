@@ -10,21 +10,23 @@ async function fetchStock() {
     resultDiv.innerHTML = "Fetching price...";
 
     try {
-        const response = await fetch(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${ticker}`);
+        const response = await fetch(`https://financialmodelingprep.com/api/v3/quote/${ticker}?apikey=demo`);
         const data = await response.json();
 
-        if (!data.quoteResponse.result.length) {
+        if (!data || data.length === 0) {
             resultDiv.innerHTML = "Invalid stock symbol.";
             return;
         }
 
-        const stock = data.quoteResponse.result[0];
-        const price = stock.regularMarketPrice;
-        const currency = stock.currency;
+        const stock = data[0];
+        const price = stock.price;
+        const change = stock.change;
+        const percent = stock.changesPercentage;
 
         resultDiv.innerHTML = `
             <strong>${ticker}</strong><br>
-            Price: ${price} ${currency}
+            Price: ${price} USD<br>
+            Change: ${change} (${percent}%)
         `;
     } catch (error) {
         resultDiv.innerHTML = "Error fetching data.";
