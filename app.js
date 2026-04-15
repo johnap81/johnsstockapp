@@ -9,10 +9,35 @@ async function fetchStock() {
 
     resultDiv.innerHTML = "Fetching price...";
 
+    // Currency detection based on ticker suffix
+    const currencyMap = {
+        "NS": "INR",   // NSE India
+        "BSE": "INR",  // BSE India
+        "DE": "EUR",   // XETRA Germany
+        "F": "EUR",    // Frankfurt
+        "L": "GBP",    // London Stock Exchange
+        "SW": "CHF",   // SIX Swiss Exchange
+        "PA": "EUR",   // Euronext Paris
+        "AS": "EUR",   // Euronext Amsterdam
+        "BR": "EUR",   // Euronext Brussels
+        "HE": "EUR",   // Helsinki
+        "ST": "SEK",   // Stockholm
+        "CO": "DKK"    // Copenhagen
+    };
+
+    // Default currency
+    let currency = "USD";
+
+    // Detect suffix
+    if (ticker.includes(".")) {
+        const suffix = ticker.split(".")[1];
+        if (currencyMap[suffix]) {
+            currency = currencyMap[suffix];
+        }
+    }
+
     try {
-        const apiKey = "U7O1FRNUI7H9WWEA";
-
-
+        const apiKey = "U7O1FRNUI7H9WWEA";  // your key
         const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${apiKey}`;
 
         const response = await fetch(url);
@@ -29,7 +54,7 @@ async function fetchStock() {
 
         resultDiv.innerHTML = `
             <strong>${ticker}</strong><br>
-            Price: ${price} USD<br>
+            Price: ${price} ${currency}<br>
             Change: ${change} (${percent})
         `;
     } catch (error) {
