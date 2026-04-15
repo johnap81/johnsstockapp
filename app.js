@@ -1,33 +1,7 @@
-const apiKey = "U7O1FRNUI7H9WWEA";  // your Alpha Vantage key
+const apiKey = "U7O1FRNUI7H9WWEA";  // Alpha Vantage only for search
+const workerURL = "https://red-grass-eae5.johnap81.workers.dev/?symbol=";
 
-function detectCurrency(ticker) {
-    const currencyMap = {
-        "NS": "INR",   // NSE India
-        "BSE": "INR",  // BSE India
-        "DE": "EUR",   // XETRA Germany
-        "F": "EUR",    // Frankfurt
-        "L": "GBP",    // London
-        "SW": "CHF",   // SIX Swiss
-        "PA": "EUR",   // Paris
-        "AS": "EUR",   // Amsterdam
-        "BR": "EUR",   // Brussels
-        "HE": "EUR",   // Helsinki
-        "ST": "SEK",   // Stockholm
-        "CO": "DKK"    // Copenhagen
-    };
-
-    let currency = "USD";
-
-    if (ticker.includes(".")) {
-        const suffix = ticker.split(".")[1];
-        if (currencyMap[suffix]) {
-            currency = currencyMap[suffix];
-        }
-    }
-
-    return currency;
-}
-
+// SEARCH FUNCTION (Alpha Vantage)
 async function searchStocks() {
     const input = document.getElementById("tickerInput");
     const query = input.value.trim();
@@ -81,6 +55,7 @@ async function searchStocks() {
     }
 }
 
+// WHEN USER CLICKS A STOCK
 function selectStock(symbol) {
     const input = document.getElementById("tickerInput");
     const suggestionsDiv = document.getElementById("suggestions");
@@ -90,8 +65,9 @@ function selectStock(symbol) {
     fetchStock();
 }
 
+// FETCH REAL PRICE FROM YOUR WORKER
 async function fetchStock() {
-    const ticker = document.getElementById("tickerInput").value.toUpperCase();
+    const ticker = document.getElementById("tickerInput").value.trim();
     const resultDiv = document.getElementById("result");
 
     if (!ticker) {
@@ -99,28 +75,22 @@ async function fetchStock() {
         return;
     }
 
-    resultDiv.innerHTML = "Fetching price...";
-
-    const currency = detectCurrency(ticker);
+    resultDiv.innerHTML = "Fetching real price...";
 
     try {
-        const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${apiKey}`;
-        const response = await fetch(url);
+        const response = await fetch(workerURL + ticker);
         const data = await response.json();
 
-        if (!data["Global Quote"] || !data["Global Quote"]["05. price"]) {
-            resultDiv.innerHTML = "Invalid stock symbol or API limit reached.";
+        if (data.error) {
+            resultDiv.innerHTML = "Invalid stock symbol.";
             return;
         }
 
-        const price = data["Global Quote"]["05. price"];
-        const change = data["Global Quote"]["09. change"];
-        const percent = data["Global Quote"]["10. change percent"];
-
         resultDiv.innerHTML = `
-            <strong>${ticker}</strong><br>
-            Price: ${price} ${currency}<br>
-            Change: ${change} (${percent})
+            <strong>${data.symbol}</strong><br>
+            ${data.name}<br><br>
+            <strong>Price:</strong> ${data.price} ${data.currency}<br>
+            <strong>Exchange:</strong> ${data.exchange}
         `;
     } catch (error) {
         resultDiv.innerHTML = "Error fetching data.";
