@@ -1,1 +1,24 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>John's Stock App</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="manifest" href="manifest.json">
+</head>
+<body>
+
+    <h1>📈 John's Stock App</h1>
+
+    <div id="app">
+        <input id="tickerInput" type="text" placeholder="Enter stock symbol (e.g., AAPL)">
+        <button onclick="fetchStock()">Get Price</button>
+
+        <div id="result"></div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
