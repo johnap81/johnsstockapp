@@ -10,7 +10,8 @@ async function fetchStock() {
     resultDiv.innerHTML = "Fetching price...";
 
     try {
-        const apiKey = "YOUR_API_KEY_HERE";  // ← Replace this with your real key
+        const apiKey = "U7O1FRNUI7H9WWEA";
+
 
         const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${ticker}&apikey=${apiKey}`;
 
