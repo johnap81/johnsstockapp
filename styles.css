@@ -259,8 +259,17 @@ body {
   font-size: 12px;
   padding: 7px 10px;
 }
+.pfTopSummary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 0 8px;
+}
 .pfGrandTotalMount {
-  margin: 12px 0 16px;
+  margin: 12px 0 0;
+}
+.pfTopSummary .pfCombinedEur {
+  margin-top: 0;
 }
 .pfGrandTotalInner {
   padding: 14px 16px;

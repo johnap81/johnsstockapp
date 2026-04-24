@@ -1291,8 +1291,11 @@ function portfolioHtml() {
   return `
     ${banner}
     <h1 class="h1">Portfolio</h1>
-    <div id="pfGrandTotalMount" class="pfGrandTotalMount" aria-live="polite" hidden></div>
-    <p class="lead">Seven main ledgers — pick a tab, then use the <strong>second row</strong> for <strong>Mutual funds</strong> (Coin vs Kuvera) or <strong>Insurances</strong> (provider). <strong>Trading 212</strong> and <strong>Crypto (T212)</strong> can be filled from the broker with <strong>Sync from Trading 212</strong> (read-only API). Rows stay in <strong>local currency</strong> in each table; the strip above and <strong>Combined portfolios</strong> use ECB rates into <strong>€</strong> (symbol, not “Euro” spelled out).</p>
+    <div class="pfTopSummary" aria-label="Total and breakdown in euro">
+      <div id="pfGrandTotalMount" class="pfGrandTotalMount" aria-live="polite" hidden></div>
+      <div id="pfCombinedEur" class="mt" hidden></div>
+    </div>
+    <p class="lead">Use the <strong>tabs</strong> for each account (T212, Crypto, Zerodha, …) and the <strong>import / add</strong> section at the bottom. <strong>Combined</strong> figures (above) use the same rows as the tables, converted to <strong>€</strong> (ECB reference) so you can compare <em>size</em> of each part of the portfolio. Row values in tables stay in the row’s <strong>local</strong> currency (USD, EUR, …) unless stated.</p>
     <p class="sml muted pfDeviceNote">Holdings are saved <strong>in this browser only</strong>, keyed to the exact site address (<code>localhost</code>, a Wi‑Fi IP, or a future hosted URL are all separate). To copy data to another device, use <strong>Backup all ledgers (JSON)</strong> where the data exists, then <strong>Restore backup</strong> on the phone or new browser.</p>
     <div class="brokerBar brokerBarWide" role="tablist" aria-label="Portfolio ledgers">
       <button type="button" class="brokerTab brokerTabMain" role="tab" data-main-tab="t212" aria-selected="true">Trading 212</button>
@@ -1309,7 +1312,6 @@ function portfolioHtml() {
     <div id="pfT212EurMount"></div>
     <div id="pfCharts" class="pfCharts" hidden></div>
     <div id="tbl" class="mt"></div>
-    <div id="pfCombinedEur" class="mt" hidden></div>
     <section id="pfManage" class="pfManageSection card2 mt" aria-labelledby="pfManageHd">
       <h2 class="h2" id="pfManageHd">Import &amp; manual rows</h2>
       <p class="sml muted">CSV import and “Add row” apply to the <strong>selected ledger tab</strong> (and the <strong>insurance provider</strong> sub-tab when Insurances is selected). <strong>Trading 212 / Crypto (T212):</strong> use <strong>Sync from Trading 212</strong> for live positions (needs API keys in server <code>.env</code>), or import CSV. Stock-style ledgers: Zerodha <strong>XLSX</strong> → Save As CSV. Insurance/FD: use <strong>Download CSV template</strong> for column names. Semicolons are auto-detected.</p>
@@ -1571,14 +1573,14 @@ function wire() {
       }
       const sym = val("fSym");
       const ex = val("fEx");
-      const ccy = val("fCcy").toUpperCase();
+      const ccy = val("fCcy").toUpperCase() || (b === PF_CRYPTO ? "USD" : "");
       const qty = num(val("fQty"));
       if (!sym || !ccy || qty <= 0) {
         status("Need symbol, currency, qty");
         return;
       }
       bundle.brokers[b].rows.push({
-        sym,
+        sym: b === PF_CRYPTO ? sym.toUpperCase() : sym,
         ex,
         ccy,
         qty,
@@ -1587,6 +1589,19 @@ function wire() {
         nm: val("fNm"),
       });
       savePfBundle(bundle);
+      if (b === PF_CRYPTO) {
+        void (async () => {
+          const b2 = loadPfBundle();
+          try {
+            await applyLiveQuotesToRowsForBroker(b2, PF_CRYPTO);
+            savePfBundle(b2);
+          } finally {
+            renderPf();
+            status("Added to Crypto (T212) — last column updates when a live quote is returned. Use Refresh for a full re-fetch.");
+          }
+        })();
+        return;
+      }
       renderPf();
       status(`Added → ${PF_BROKER_LABEL[b]}`);
     });
@@ -3706,7 +3721,7 @@ function pfMergeSmallSlices(slices, minShare) {
 function buildPfIntelligenceHtml(rows, broker) {
   if (broker === PF_INSURANCE || broker === PF_FIXED_DEPOSIT) {
     return `<div class="h3">Ledger note</div>
-      <p class="sml muted">Allocation pies and ticker-based commentary apply to <strong>stock-style</strong> ledgers. For <strong>insurance</strong> and <strong>fixed deposits</strong>, use the table columns (premiums, invested total, current value) and <strong>Combined portfolios (EUR)</strong> below.</p>`;
+      <p class="sml muted">Allocation pies and ticker-based commentary apply to <strong>stock-style</strong> ledgers. For <strong>insurance</strong> and <strong>fixed deposits</strong>, use the table columns (premiums, invested total, current value) and the <strong>By ledger (€)</strong> block <strong>at the top</strong> of the page for the € rollup.</p>`;
   }
   if (!rows.length) return "";
   const tot = rows.reduce((s, r) => s + pfRowWeight(r), 0);
@@ -3746,7 +3761,7 @@ function buildPfIntelligenceHtml(rows, broker) {
         : `<p>All weighted rows use <strong>${esc([...codes][0])}</strong> as listing currency in this snapshot.</p>`;
   const t212note = t212Style
     ? "<p>For <strong>Trading 212</strong> / <strong>Crypto (T212)</strong>, use <strong>Sync</strong> or <strong>Refresh prices</strong> to pull live figures from the read-only API, then read the <strong>EUR totals</strong> card — ECB reference rates (not broker spreads).</p>"
-    : "<p>Open <strong>Combined portfolios (EUR)</strong> under the holdings table for a cross-ledger EUR view when FX loads.</p>";
+    : "<p>When FX loads, the <strong>By ledger (€)</strong> block at the <strong>top</strong> of the page shows a cross-ledger view.</p>";
   return `
     <div class="h3">Portfolio briefing <span class="sml muted">(rule-based lens)</span></div>
     <p class="sml muted">Deterministic summary from saved rows and last prices — not advice. <strong>LLM “AI commentary”</strong> (yellow banner when missing keys) is separate: it needs API keys in <code>.env</code>; this block always runs in-browser.</p>
@@ -4155,7 +4170,7 @@ function updatePfLedgerTotals(rows, rowObjs, multi, oneCcy, codes, tVal, tPl) {
     el.innerHTML = `<div class="pfTotalsStrip pfTotalsStripMulti" role="region" aria-label="Active ledger totals">
     <div class="pfTotalsStripInner">
       <span class="pfTotalsLedger muted sml">${esc(lab)} · multiple currencies</span>
-      <p class="sml muted" style="margin:8px 0 0">Per-row values stay in each line’s currency. The <strong>Trading 212 — totals in EUR</strong> card is next; <strong>Combined portfolios (EUR)</strong> after the holdings table rolls up every ledger when FX loads.</p>
+      <p class="sml muted" style="margin:8px 0 0">Per-row values stay in each line’s currency. The <strong>Trading 212 — totals in EUR</strong> card is just above the table. The <strong>By ledger (€)</strong> block at the <strong>top</strong> of the page rolls up every ledger when FX loads.</p>
     </div>
   </div>`;
     return;
@@ -4229,6 +4244,32 @@ function paintPfAddFieldsMount() {
       </label>
       <label class="lbl pfAddField">Currency
         <input class="in" id="fPolCcy" placeholder="INR, EUR…" autocomplete="off" />
+      </label>`;
+    return;
+  }
+  if (b === PF_CRYPTO) {
+    mount.innerHTML = `
+      <p class="sml muted pfAddHint">Manual crypto (e.g. <strong>BTC</strong>, <strong>ETH</strong>) — enter <strong>USD</strong> in Currency if you use US dollar spot. After Add, the app fetches a <strong>live</strong> last from the same quote source as Search. You can also use <strong>Sync from Trading 212</strong> for open broker positions, then <strong>Refresh prices</strong> to fill in last (USD) for every row.</p>
+      <label class="lbl pfAddField">Symbol
+        <input class="in" id="fSym" placeholder="BTC, ETH" autocomplete="off" />
+      </label>
+      <label class="lbl pfAddField">Name <span class="muted sml">(opt.)</span>
+        <input class="in" id="fNm" placeholder="Bitcoin" autocomplete="off" />
+      </label>
+      <label class="lbl pfAddField">Exchange <span class="muted sml">(opt.)</span>
+        <input class="in" id="fEx" placeholder="leave empty or CRYPTO" autocomplete="off" />
+      </label>
+      <label class="lbl pfAddField">Currency
+        <input class="in" id="fCcy" placeholder="USD" autocomplete="off" />
+      </label>
+      <label class="lbl pfAddField">Qty / units
+        <input class="in" id="fQty" placeholder="0.5" inputmode="decimal" autocomplete="off" />
+      </label>
+      <label class="lbl pfAddField">Avg buy
+        <input class="in" id="fAvg" placeholder="Average in row currency" inputmode="decimal" autocomplete="off" />
+      </label>
+      <label class="lbl pfAddField">Last (live) <span class="muted sml">(opt.)</span>
+        <input class="in" id="fLast" placeholder="Filled on Refresh" inputmode="decimal" autocomplete="off" />
       </label>`;
     return;
   }
@@ -4442,7 +4483,7 @@ function renderPfInsuranceTable(el) {
     .join("");
   const foot = !multi && oneCcy
     ? `<tr class="tot"><td colspan="6"><strong>Total</strong></td><td class="pfNum"><strong>${esc(fmtMoney(oneCcy, tVal))}</strong></td><td class="pfNum pfPlCol ${tPl >= 0 ? "plp" : "pln"}"><strong>${esc(fmtMoney(oneCcy, tPl))}</strong></td><td></td><td></td></tr>`
-    : `<tr class="tot"><td colspan="11" class="muted">Several currencies in this provider — row amounts stay native. See <strong>Combined portfolios (EUR)</strong> below.</td></tr>`;
+    : `<tr class="tot"><td colspan="11" class="muted">Several currencies in this provider — row amounts stay native. See the <strong>By ledger (€)</strong> block at the <strong>top</strong> of the page.</td></tr>`;
   el.innerHTML = `<div class="pfTableWrap" role="region" aria-label="Insurance policies"><table class="pfHoldingsTbl pfAltHoldingsTbl"><thead><tr>
     <th>Policy</th><th>Policy #</th><th>Purchased</th><th class="pfNum">At purchase</th><th class="pfNum">Premiums paid</th><th class="pfNum">Invested total</th><th class="pfNum">Growth %</th><th class="pfNum">Current value</th><th class="pfNum pfPlCol">P/L</th><th>Ccy</th><th></th>
   </tr></thead><tbody>${body}${foot}</tbody></table></div>`;
@@ -4637,7 +4678,7 @@ function renderPf() {
   const nc = showName ? 1 : 0;
   const foot = !multi
     ? `<tr class="tot"><td colspan="${6 + nc}"><strong>Total</strong></td><td class="pfNum"><strong>${esc(fmtMoney(oneCcy, tVal))}</strong></td><td class="sml pfNum"><strong>100%</strong></td><td class="pfNum pfPlCol ${tPl >= 0 ? "plp" : "pln"}"><strong>${esc(fmtMoney(oneCcy, tPl))}</strong></td></tr>`
-    : `<tr class="tot"><td colspan="${8 + nc}" class="muted">Multiple currencies — row amounts stay native. <strong>Trading 212</strong> tab: EUR rollup card sits under the tab strip. <strong>All ledgers in EUR</strong>: see <strong>Combined portfolios (EUR)</strong> under the table when FX loads. <strong>Weight</strong> is hidden until this tab uses a single currency.</td></tr>`;
+    : `<tr class="tot"><td colspan="${8 + nc}" class="muted">Multiple currencies — row amounts stay native. <strong>Trading 212</strong> tab: EUR rollup card is under the tab strip. <strong>All ledgers in €</strong> are in the <strong>By ledger (€)</strong> block at the <strong>top</strong> of the page when FX loads. <strong>Weight</strong> is hidden until this tab uses a single currency.</td></tr>`;
   const thName = showName ? "<th>Name</th>" : "";
   el.innerHTML = `<div class="pfTableWrap" role="region" aria-label="Holdings table"><table class="pfHoldingsTbl"><thead><tr>
     <th class="pfSymCol">Sym</th>${thName}<th class="pfExCol">Ex</th><th>Ccy</th><th class="pfNum">Qty</th><th class="pfNum">Avg</th><th class="pfNum">Last</th><th class="pfNum">Value</th>${thWeight}<th class="pfNum pfPlCol">P/L</th>
@@ -4790,8 +4831,8 @@ async function refreshPfCombinedEur() {
       <div class="sml muted">Cost ${esc(fmtMoney("EUR", combCost))}</div>
       <div class="sml ${combPl >= 0 ? "plp" : "pln"}">P/L <strong>${esc(fmtMoney("EUR", combPl))}</strong></div></div>`;
     box.innerHTML = `<div class="card2 pfCombinedEurInner">
-      <div class="h3">Combined portfolios (€)</div>
-      <p class="sml muted">Uses <strong>${src}</strong>, rate date <strong>${dt}</strong>. Each row’s <em>market value</em> and <em>cost</em> convert with mid <strong>EUR per 1 unit of row currency</strong> (e.g. Zerodha rows stored in <strong>INR</strong> show as INR in the table above; this grid is the ECB-based <strong>EUR estimate</strong> for the same rows). Same FX source as the Trading 212-only EUR card.</p>
+      <div class="h3">By ledger (€) — all accounts</div>
+      <p class="sml muted">Same <strong>${src}</strong> rates as the total card · <strong>${dt}</strong>. Each cell is that ledger’s market value, cost, and P/L in <strong>€</strong> (row currencies converted at ECB mid; see table for native amounts).</p>
       ${disc}
       <div class="pfEurGrid pfEurGridWide mt">${legCells}${combCell}</div>${missTxt}</div>`;
     if (grand) {
@@ -4877,6 +4918,74 @@ function num(x) {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Map a user symbol to a Yahoo-style pair for `/api/quote` (crypto in USD). */
+function yahooCryptoPairSymbol(sym) {
+  const s = String(sym || "")
+    .trim()
+    .toUpperCase();
+  if (!s) return "";
+  if (s.includes("-")) return s;
+  if (s === "BTC" || s === "XBT") return "BTC-USD";
+  if (s === "ETH") return "ETH-USD";
+  if (s === "SOL") return "SOL-USD";
+  if (s === "XRP") return "XRP-USD";
+  if (s === "ADA") return "ADA-USD";
+  if (s === "DOGE") return "DOGE-USD";
+  if (/^[A-Z0-9]{1,14}$/.test(s)) return `${s}-USD`;
+  return s;
+}
+
+function buildQuoteUrlParams(sym, ex, brokerId) {
+  const u = new URLSearchParams();
+  if (brokerId === PF_CRYPTO) {
+    u.set("symbol", yahooCryptoPairSymbol(sym));
+    const x = String(ex || "").trim();
+    if (x && !/^crypto$/i.test(x)) u.set("exchange", x);
+  } else {
+    u.set("symbol", sym);
+    if (ex) u.set("exchange", ex);
+  }
+  return u;
+}
+
+/** Update `last` (and optional `pfKind`) from `/api/quote` for all rows in a broker. */
+async function applyLiveQuotesToRowsForBroker(bundle, b) {
+  const rows = bundle.brokers[b].rows;
+  const syms = [...new Set(rows.map((r) => r.sym).filter(Boolean))];
+  if (!syms.length) return 0;
+  let n = 0;
+  for (let i = 0; i < syms.length; i++) {
+    const s = syms[i];
+    status(`Quote ${i + 1}/${syms.length}: ${s}`);
+    const row0 = rows.find((r) => r.sym === s);
+    const ex = row0?.ex || "";
+    const u = buildQuoteUrlParams(s, ex, b);
+    try {
+      const r = await fetch(`/api/quote?${u}`);
+      if (!r.ok) continue;
+      const j = await r.json();
+      const q = Array.isArray(j) ? j[0] : null;
+      const px = num(q?.price);
+      if (px > 0) {
+        rows.forEach((row) => {
+          if (row.sym === s) row.last = px;
+        });
+        n++;
+      }
+      const qt = String(q?.quoteType || q?.instrumentType || "").trim();
+      if (qt) {
+        rows.forEach((row) => {
+          if (row.sym === s) row.pfKind = qt;
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+    await new Promise((res) => setTimeout(res, 300));
+  }
+  return n;
+}
+
 function normalizeT212SyncedRow(r) {
   if (!r || typeof r !== "object") return r;
   const t = String(r.t212Ticker || r.sym || "").trim();
@@ -4919,7 +5028,24 @@ async function applyTrading212SyncToBundle() {
 async function refreshPf() {
   const bundle = loadPfBundle();
   const b = getActiveBroker();
-  if (b === PF_T212 || b === PF_CRYPTO) {
+  if (b === PF_CRYPTO) {
+    status("Crypto: Trading 212 sync + live USD prices…");
+    try {
+      const j = await applyTrading212SyncToBundle();
+      const ns = Number(j.n_t212 ?? 0) || 0;
+      const nc = Number(j.n_t212_crypto ?? 0) || 0;
+      status(`T212 sync ok · ${ns} stock/ETF, ${nc} broker crypto — fetching last prices…`);
+    } catch (e) {
+      status(e instanceof Error ? e.message : String(e));
+    }
+    const b2 = loadPfBundle();
+    const nQ = await applyLiveQuotesToRowsForBroker(b2, PF_CRYPTO);
+    savePfBundle(b2);
+    renderPf();
+    status(nQ > 0 ? `Crypto updated · live prices for ${nQ} symbol(s). EUR cards use your row currency. · ${PF_BROKER_LABEL[PF_CRYPTO]}` : "Crypto: sync done — add BTC/ETH rows or check quote keys if prices stay 0");
+    return;
+  }
+  if (b === PF_T212) {
     status("Syncing from Trading 212…");
     try {
       const j = await applyTrading212SyncToBundle();
@@ -4932,45 +5058,17 @@ async function refreshPf() {
     }
     return;
   }
-  const rows = bundle.brokers[b].rows;
-  const syms = [...new Set(rows.map((r) => r.sym).filter(Boolean))];
-  if (!syms.length) {
+  const b3 = loadPfBundle();
+  if (!b3.brokers[b].rows.length) {
     status("Nothing to refresh");
     return;
   }
-  let i = 0;
-  for (const s of syms) {
-    i++;
-    status(`Quote ${i}/${syms.length}: ${s}`);
-    const row0 = rows.find((r) => r.sym === s);
-    const ex = row0?.ex || "";
-    const u = new URLSearchParams({ symbol: s });
-    if (ex) u.set("exchange", ex);
-    try {
-      const r = await fetch(`/api/quote?${u}`);
-      if (!r.ok) continue;
-      const j = await r.json();
-      const q = Array.isArray(j) ? j[0] : null;
-      const px = num(q?.price);
-      if (px > 0) {
-        rows.forEach((row) => {
-          if (row.sym === s) row.last = px;
-        });
-      }
-      const qt = String(q?.quoteType || q?.instrumentType || "").trim();
-      if (qt) {
-        rows.forEach((row) => {
-          if (row.sym === s) row.pfKind = qt;
-        });
-      }
-    } catch {
-      /* ignore */
-    }
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  savePfBundle(bundle);
+  const nQ = await applyLiveQuotesToRowsForBroker(b3, b);
+  savePfBundle(b3);
   renderPf();
-  status(`Refresh done · ${PF_BROKER_LABEL[b]}`);
+  status(
+    nQ > 0 ? `Refresh done · live prices for ${nQ} symbol(s) · ${PF_BROKER_LABEL[b]}` : `Refresh done · no prices updated · ${PF_BROKER_LABEL[b]}`,
+  );
 }
 
 /** Split one line on comma or semicolon with RFC-style quoted fields (`sep` is `,` or `;`). */
