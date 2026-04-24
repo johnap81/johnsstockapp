@@ -1,0 +1,1535 @@
+:root {
+  color-scheme: dark;
+  --bg: #070a10;
+  --card: rgba(255, 255, 255, 0.06);
+  --bd: rgba(255, 255, 255, 0.12);
+  --tx: rgba(255, 255, 255, 0.92);
+  --m: rgba(255, 255, 255, 0.62);
+  --a: #5eead4;
+  --a2: #a78bfa;
+  --r: 14px;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f5f8;
+  --card: #fff;
+  --bd: rgba(0, 0, 0, 0.1);
+  --tx: rgba(0, 0, 0, 0.9);
+  --m: rgba(0, 0, 0, 0.55);
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  height: 100%;
+  margin: 0;
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--tx);
+}
+
+.app {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Sticky header: title row + nav (stays visible while scrolling). */
+.siteHead {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: color-mix(in srgb, var(--bg) 96%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--bd);
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--a), var(--a2));
+}
+.title {
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+.sub {
+  font-size: 11px;
+  color: var(--m);
+}
+
+.nav {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+  flex: 1;
+  min-width: 0;
+}
+.navlink {
+  color: var(--m);
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+.navlink:hover {
+  color: var(--tx);
+  background: var(--card);
+}
+.navlink[aria-current="page"] {
+  color: var(--tx);
+  border: 1px solid var(--bd);
+  background: var(--card);
+}
+
+/* Instrument workspace (symbol route) */
+.instrNav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.backLink {
+  color: var(--a);
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 14px;
+}
+.backLink:hover {
+  text-decoration: underline;
+}
+.instrHead .h1 {
+  margin-bottom: 4px;
+}
+.instrumentView {
+  position: relative;
+}
+.instrStickyTop {
+  position: sticky;
+  top: 58px;
+  z-index: 4;
+  margin: 0 0 8px;
+  padding: 0 0 8px;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--bd);
+}
+.instrStickyTop .tabBar {
+  margin: 10px 0 0;
+}
+.tabBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 18px 0 12px;
+  padding: 4px;
+  border-radius: var(--r);
+  background: var(--card);
+  border: 1px solid var(--bd);
+}
+.tabBtn {
+  font: inherit;
+  font-weight: 700;
+  font-size: 13px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--m);
+  cursor: pointer;
+}
+.tabBtn:hover {
+  color: var(--tx);
+  background: color-mix(in srgb, var(--bg) 40%, var(--card));
+}
+.tabBtn[aria-selected="true"] {
+  color: var(--tx);
+  border-color: var(--bd);
+  background: color-mix(in srgb, var(--a) 14%, var(--card));
+}
+.tabPanel[hidden] {
+  display: none !important;
+}
+.addPfGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.addPfGrid .lbl {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--m);
+}
+.pfSymLink {
+  color: var(--a);
+  font-weight: 800;
+  text-decoration: none;
+}
+.pfSymLink:hover {
+  text-decoration: underline;
+}
+
+.brokerBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin: 16px 0 18px;
+  padding: 6px;
+  border-radius: var(--r);
+  background: var(--card);
+  border: 1px solid var(--bd);
+}
+.brokerBarWide {
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+.brokerBarWide .brokerTab {
+  font-size: 12px;
+  padding: 8px 10px;
+}
+.brokerTab {
+  font: inherit;
+  font-weight: 800;
+  font-size: 13px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--m);
+  cursor: pointer;
+}
+.brokerTab:hover {
+  color: var(--tx);
+}
+.brokerTab[aria-selected="true"] {
+  color: var(--tx);
+  border-color: var(--bd);
+  background: color-mix(in srgb, var(--a2) 12%, var(--card));
+}
+.pfBrokerCap {
+  margin-left: auto;
+}
+
+.brokerTabMain {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+}
+.pfSubLedgerBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 0 16px;
+  padding: 6px 8px;
+  border-radius: var(--r);
+  background: color-mix(in srgb, var(--a2) 6%, var(--card));
+  border: 1px solid var(--bd);
+}
+.pfSubLedgerBar .insCoTab,
+.pfSubLedgerBar .pfSubTab {
+  font-size: 12px;
+  padding: 7px 10px;
+}
+.pfGrandTotalMount {
+  margin: 12px 0 16px;
+}
+.pfGrandTotalInner {
+  padding: 14px 16px;
+}
+.pfGrandTotalFigRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+.pfGrandTotalLab {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--tx);
+}
+.pfGrandTotalFig {
+  font-size: clamp(1.35rem, 3.5vw, 1.85rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--tx);
+}
+.pfGrandTotalSubRow {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-top: 6px;
+}
+.pfAddFieldBtnRow {
+  display: flex;
+  justify-content: flex-end;
+}
+.pfAddHint {
+  grid-column: 1 / -1;
+  margin: 0 0 8px;
+}
+.pfAltHoldingsTbl {
+  font-size: 13px;
+}
+.pfAltHoldingsTbl th,
+.pfAltHoldingsTbl td {
+  vertical-align: top;
+}
+.pfActCol {
+  white-space: normal;
+  min-width: 9rem;
+}
+.pfActCol .btn {
+  margin-right: 6px;
+  margin-bottom: 4px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+a.btn {
+  text-decoration: none;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* API health link in header */
+.healthTopBtn {
+  border: 2px solid #14b8a6;
+  font-size: 13px;
+  white-space: nowrap;
+  background: linear-gradient(135deg, color-mix(in srgb, #14b8a6 55%, transparent), color-mix(in srgb, #0d9488 45%, transparent));
+  color: #ecfdf5 !important;
+}
+.healthTopBtn:hover {
+  filter: brightness(1.12);
+}
+
+.main {
+  flex: 1;
+  width: min(720px, 100%);
+  margin: 0 auto;
+  padding: 20px 16px 32px;
+}
+
+.globalApiBanner {
+  width: 100%;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border-radius: var(--r);
+  border: 1px solid var(--bd);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.globalApiBanner[hidden] {
+  display: none !important;
+}
+.globalApiBanner a {
+  color: var(--a);
+  font-weight: 700;
+}
+.globalApiBannerErr {
+  border-color: color-mix(in srgb, #f87171 55%, var(--bd));
+  background: color-mix(in srgb, #f87171 12%, var(--card));
+  color: var(--tx);
+}
+.globalApiBannerInfo {
+  border-color: color-mix(in srgb, #fbbf24 50%, var(--bd));
+  background: color-mix(in srgb, #fbbf24 10%, var(--card));
+  color: var(--tx);
+}
+.globalApiBannerRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 12px;
+}
+.globalApiBannerBody {
+  flex: 1 1 220px;
+  min-width: 0;
+  line-height: 1.45;
+}
+.globalApiBannerBody .sml {
+  display: block;
+  margin-top: 6px;
+  font-weight: 500;
+  opacity: 0.95;
+}
+.globalApiDismiss {
+  flex: 0 0 auto;
+}
+.funSnap {
+  border-top: 1px dashed var(--bd);
+  padding-top: 10px;
+}
+
+.panel {
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: var(--r);
+  padding: 18px;
+}
+
+.h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+}
+.lead {
+  margin: 10px 0 0;
+  color: var(--m);
+  line-height: 1.5;
+  font-size: 14px;
+}
+.lead .inlineHealth,
+.panel .inlineHealth {
+  font-weight: 800;
+  color: var(--a);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.lead .inlineHealth:hover,
+.panel .inlineHealth:hover {
+  color: var(--tx);
+}
+.migrateBanner {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: var(--r);
+  border: 1px solid color-mix(in srgb, var(--a) 35%, var(--bd));
+  background: color-mix(in srgb, var(--a) 12%, var(--card));
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+/* Portfolio allocation (donut + legend) */
+/* Portfolio totals under broker tabs */
+.pfTotalsStrip {
+  border-radius: var(--r);
+  border: 1px solid var(--bd);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--a2) 14%, var(--card)),
+    color-mix(in srgb, var(--bg) 40%, var(--card))
+  );
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--tx) 6%, transparent);
+}
+.pfTotalsStripInner {
+  padding: 12px 14px 14px;
+}
+.pfTotalsLedger {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.pfTotalsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px 16px;
+  align-items: end;
+}
+.pfTotalsBig {
+  font-size: 20px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  margin-top: 2px;
+}
+.pfTotalsMid {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+.pfTotalsStripMulti .pfTotalsStripInner {
+  padding-bottom: 12px;
+}
+
+.pfManageSection {
+  border: 1px solid var(--bd);
+}
+
+/* Portfolio → Import: manual add row (compact grid) */
+.pfAddRowGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 10px 12px;
+  align-items: start;
+}
+@media (min-width: 560px) {
+  .pfAddRowGrid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  }
+}
+.pfAddRowGrid .pfAddField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--m);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.pfAddRowGrid .pfAddField .muted {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+.pfAddRowGrid .pfAddField .in {
+  font-size: 13px;
+  text-transform: none;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.pfAddFieldBtn {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+.pfAddBtnRsv {
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+  min-height: 1.25em;
+  visibility: hidden;
+}
+.pfAddBtn {
+  width: 100%;
+  white-space: nowrap;
+}
+@media (max-width: 480px) {
+  .pfAddFieldBtn {
+    grid-column: 1 / -1;
+  }
+  .pfAddBtn {
+    width: auto;
+    align-self: flex-start;
+  }
+}
+
+.pfCharts {
+  margin-top: 18px;
+}
+.pfAllocCard .h3 {
+  margin-bottom: 6px;
+}
+.pfAllocLead {
+  margin: 0 0 10px;
+  line-height: 1.45;
+}
+.pfMetaDetails {
+  margin: 0 0 14px;
+  border-radius: 10px;
+  border: 1px solid var(--bd);
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--bg) 35%, var(--card));
+}
+.pfMetaDetails summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--tx);
+}
+
+.pfSectorTblWrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 10px;
+  border: 1px solid var(--bd);
+  background: color-mix(in srgb, var(--bg) 25%, var(--card));
+}
+.pfSectorTbl {
+  width: 100%;
+  min-width: 280px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.pfSectorTbl th,
+.pfSectorTbl td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--bd);
+  text-align: left;
+  vertical-align: middle;
+}
+.pfSectorTbl th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--m);
+  font-weight: 800;
+}
+.pfSectorTbl th.pfNum,
+.pfSectorTbl td.pfNum {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.pfSectorTbl tbody tr:last-child td {
+  border-bottom: none;
+}
+.pfCharts .pfBrainCard {
+  margin-top: 20px;
+}
+
+/* Holdings table: wide numbers (e.g. INR) without clipping */
+.pfTableWrap {
+  margin-top: 16px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: var(--r);
+  border: 1px solid var(--bd);
+  background: var(--card);
+  max-width: 100%;
+}
+.pfHoldingsTbl {
+  width: 100%;
+  min-width: 720px;
+  font-size: 13px;
+}
+.pfHoldingsTbl th,
+.pfHoldingsTbl td {
+  padding: 10px 10px;
+  vertical-align: middle;
+}
+.pfHoldingsTbl th.pfNum,
+.pfHoldingsTbl td.pfNum {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.pfHoldingsTbl .pfPlCol {
+  padding-right: 14px;
+}
+.pfHoldingsTbl .pfSymCol {
+  white-space: nowrap;
+}
+.pfHoldingsTbl .pfExCol {
+  max-width: 4.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pfHoldingsTbl tr.tot td {
+  font-weight: 800;
+  border-bottom: none;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+.pfPieGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px 18px;
+  align-items: start;
+}
+.pfPieCard {
+  margin: 0;
+  padding: 14px 12px 12px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--bd) 85%, var(--a2) 15%);
+  background: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--card) 88%, var(--a2) 12%),
+    color-mix(in srgb, var(--bg) 45%, var(--card))
+  );
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--tx) 5%, transparent);
+}
+.pfCap {
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--m);
+  margin: 0 0 8px;
+}
+.pfPie {
+  display: block;
+  margin: 0 auto 8px;
+}
+.pfPieLeg {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.pfPieLeg li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  color: var(--tx);
+}
+.pfSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.pfPieLab {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pfPiePct {
+  font-variant-numeric: tabular-nums;
+  color: var(--m);
+  font-weight: 700;
+}
+
+.h2 {
+  font-size: 16px;
+  font-weight: 800;
+  margin: 0 0 6px;
+}
+.h3 {
+  font-size: 14px;
+  font-weight: 800;
+  margin: 0 0 8px;
+  color: var(--tx);
+}
+
+/* Instrument overview: news + corporate feeds */
+.instrFeed {
+  margin-top: 6px;
+}
+.newsList {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.newsList li {
+  margin: 0 0 12px;
+  line-height: 1.45;
+  font-size: 14px;
+}
+.newsList a {
+  color: var(--a);
+  font-weight: 700;
+  text-decoration: none;
+}
+.newsList a:hover {
+  text-decoration: underline;
+}
+.newsMeta,
+.newsSrc,
+.corpSrc {
+  display: block;
+  margin-top: 2px;
+}
+.corpGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 8px;
+}
+.corpH {
+  font-size: 13px;
+  font-weight: 800;
+  margin: 0 0 6px;
+  color: var(--tx);
+}
+.corpTbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.corpTbl th,
+.corpTbl td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--bd);
+  vertical-align: top;
+}
+.corpTbl th {
+  color: var(--m);
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.corpTbl tr:last-child td {
+  border-bottom: none;
+}
+
+.smlBtn {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.pfT212Eur {
+  padding: 14px 16px;
+}
+.pfEurGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px 18px;
+}
+.pfEurGridWide {
+  grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+  gap: 20px 18px;
+  align-items: start;
+}
+.pfEurCell {
+  min-width: 0;
+  padding: 6px 4px 4px;
+}
+.pfEurCell .pfEurBig {
+  margin-top: 4px;
+  line-height: 1.2;
+}
+.pfEurCellHighlight {
+  padding: 10px 10px 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--a2) 40%, var(--bd));
+  background: color-mix(in srgb, var(--a2) 11%, var(--card));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--tx) 4%, transparent);
+}
+.pfEurBig {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.chartSection {
+  margin-top: 12px;
+}
+.instrChartDock {
+  margin-top: 12px;
+}
+.instrChartDock .h3 {
+  margin-bottom: 6px;
+}
+.pfBrainCard {
+  line-height: 1.45;
+}
+
+/* Instrument: “from portfolio” holding summary */
+.instrPfHold {
+  border-color: color-mix(in srgb, var(--a) 28%, var(--bd));
+  background: color-mix(in srgb, var(--a) 8%, var(--card));
+}
+.instrPfHoldBlockGap {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--bd);
+}
+.instrPfEurStrip {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed color-mix(in srgb, var(--bd) 90%, var(--m));
+}
+.instrPfEurDisc {
+  margin: 8px 0 0;
+  line-height: 1.4;
+}
+.pfBrainList {
+  margin: 0;
+  padding-left: 1.25em;
+}
+.pfBrainList li {
+  margin: 4px 0;
+}
+.chartStaleBanner {
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.4;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--a) 35%, var(--bd));
+  background: color-mix(in srgb, var(--a) 12%, var(--card));
+  color: var(--tx);
+}
+.chartTypeBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin-top: 8px;
+}
+.chartOlBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-top: 6px;
+  font-size: 13px;
+}
+.chartOlBar .chkLab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--m);
+}
+.chartOlBar input[type="checkbox"] {
+  accent-color: var(--a, #5eead4);
+}
+.histCanvasWrap {
+  width: 100%;
+  margin-top: 6px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--bd);
+  background: color-mix(in srgb, var(--bg) 50%, transparent);
+}
+.histCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  vertical-align: middle;
+}
+.histVolCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  vertical-align: middle;
+}
+.moodSigRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px 28px;
+  align-items: flex-start;
+  margin-top: 10px;
+}
+.moodSigCell .moLabel {
+  font-weight: 800;
+  font-size: 1.08rem;
+  margin-top: 4px;
+  letter-spacing: -0.02em;
+}
+.moodBull {
+  color: #15803d;
+}
+.moodBear {
+  color: #b91c1c;
+}
+.moodNeu {
+  color: #a16207;
+}
+[data-theme="dark"] .moodBull {
+  color: #4ade80;
+}
+[data-theme="dark"] .moodBear {
+  color: #f87171;
+}
+[data-theme="dark"] .moodNeu {
+  color: #facc15;
+}
+.sigBuy {
+  color: #15803d;
+}
+.sigSell {
+  color: #b91c1c;
+}
+.sigHold {
+  color: #a16207;
+}
+[data-theme="dark"] .sigBuy {
+  color: #4ade80;
+}
+[data-theme="dark"] .sigSell {
+  color: #f87171;
+}
+[data-theme="dark"] .sigHold {
+  color: #facc15;
+}
+.moodSigNote {
+  margin-top: 8px;
+  max-width: 52rem;
+}
+.volDock {
+  margin-top: 10px;
+}
+.volDockHd {
+  margin-bottom: 4px;
+}
+.volCanvasWrap {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--bd);
+  background: color-mix(in srgb, var(--bg) 45%, transparent);
+}
+.funMount {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.funGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px 16px;
+}
+.funRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+  line-height: 1.35;
+}
+.funExtras {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.funExtras .funRow {
+  padding-top: 6px;
+  border-top: 1px solid var(--bd);
+}
+.techMount {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--bd);
+}
+.techGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+.techRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 12px;
+  font-size: 14px;
+  line-height: 1.35;
+}
+.techLab {
+  min-width: 6.5rem;
+  color: var(--m);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.techVal {
+  flex: 1;
+  min-width: 0;
+}
+.techDisclaimer {
+  margin: 10px 0 0;
+}
+.techDetails {
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+.techDetails > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--tx);
+}
+.techDetailsBody {
+  margin-top: 8px;
+  padding-left: 10px;
+  border-left: 3px solid color-mix(in srgb, var(--acc) 55%, var(--bd));
+}
+.techDetailsBody p {
+  margin: 0.45rem 0;
+}
+.aiComRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.aiCommentaryOut {
+  min-height: 2.5rem;
+}
+.aiCommentaryPre {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--bd);
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  color: var(--tx);
+  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 28rem;
+  overflow: auto;
+}
+.big {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.in,
+.ta {
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--bd);
+  background: color-mix(in srgb, var(--bg) 40%, transparent);
+  color: var(--tx);
+  font: inherit;
+}
+.ta {
+  resize: vertical;
+  min-height: 140px;
+}
+
+.btn {
+  border: 1px solid var(--bd);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--a) 22%, transparent), color-mix(in srgb, var(--a2) 22%, transparent));
+  color: var(--tx);
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  font: inherit;
+  touch-action: manipulation;
+}
+.btn.ghost {
+  background: var(--card);
+}
+.btn:hover {
+  filter: brightness(1.05);
+}
+
+.mt {
+  margin-top: 14px;
+}
+.row {
+  margin-top: 12px;
+}
+.rowgap {
+  display: grid;
+  gap: 8px;
+}
+.grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+@media (max-width: 640px) {
+  .grid2 {
+    grid-template-columns: 1fr;
+  }
+}
+.grid3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+@media (max-width: 560px) {
+  .grid3 {
+    grid-template-columns: 1fr;
+  }
+}
+
+.lbl {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--m);
+}
+
+.list {
+  display: grid;
+  gap: 8px;
+}
+.searchFilt {
+  margin-top: 12px;
+}
+.searchFiltRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: flex-end;
+}
+.filtLab {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--m);
+  min-width: 0;
+}
+.filtSel {
+  margin-top: 0;
+  min-width: 140px;
+  max-width: min(240px, 100%);
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.hitTop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.qtChip {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--bd);
+  color: var(--m);
+}
+.hitName {
+  margin-top: 4px;
+  line-height: 1.35;
+}
+.hitMeta {
+  margin-top: 4px;
+  line-height: 1.4;
+}
+.hit {
+  text-align: left;
+  width: 100%;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--bd);
+  background: color-mix(in srgb, var(--bg) 35%, transparent);
+  color: var(--tx);
+  cursor: pointer;
+  font: inherit;
+}
+.hit:hover {
+  border-color: color-mix(in srgb, var(--a) 40%, var(--bd));
+}
+
+.sml {
+  font-size: 12px;
+}
+.muted {
+  color: var(--m);
+}
+.err {
+  color: #fca5a5;
+  font-size: 14px;
+}
+.tip429 {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-radius: var(--r);
+  border: 1px solid color-mix(in srgb, var(--a2, #a78bfa) 40%, var(--bd));
+  background: color-mix(in srgb, var(--a2) 10%, var(--card));
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--tx);
+}
+.tip429 code {
+  font-size: 0.95em;
+}
+
+.card2 {
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--bg) 30%, transparent);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th,
+td {
+  border-bottom: 1px solid var(--bd);
+  padding: 8px 6px;
+  text-align: left;
+}
+th {
+  color: var(--m);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.st {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--m);
+}
+
+.foot {
+  padding: 12px 16px 20px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--m);
+  border-top: 1px solid var(--bd);
+}
+.foot a {
+  color: var(--m);
+}
+.footLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  justify-content: flex-end;
+}
+.footLinks a {
+  color: var(--a);
+  font-weight: 600;
+  text-decoration: none;
+}
+.footLinks a:hover {
+  text-decoration: underline;
+}
+.footHealth {
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--a) 50%, var(--bd));
+  background: color-mix(in srgb, var(--a) 12%, transparent);
+}
+.footHealth:hover {
+  text-decoration: none !important;
+  filter: brightness(1.08);
+}
+
+.plp {
+  color: #34d399;
+}
+.pln {
+  color: #f87171;
+}
+tr.tot td {
+  border-top: 2px solid var(--bd);
+  padding-top: 12px;
+}
+
+code {
+  font-size: 0.92em;
+}
+
+.pfDeviceNote {
+  margin-top: 10px;
+  padding: 10px 12px;
+  line-height: 1.45;
+  border-radius: var(--r);
+  border: 1px solid color-mix(in srgb, var(--a2) 28%, var(--bd));
+  background: color-mix(in srgb, var(--a2) 7%, var(--card));
+}
+.pfToolRow .btn.ghost {
+  flex: 1 1 auto;
+  min-width: min(160px, 100%);
+  justify-content: center;
+}
+
+/* ——— Mobile layout (phone first when narrow) ——— */
+@media (max-width: 640px) {
+  .main {
+    width: 100%;
+    max-width: 100%;
+    padding: 12px 12px 24px;
+  }
+  .panel {
+    padding: 14px 12px;
+    border-radius: 12px;
+  }
+  .bar {
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .brand {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .nav {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    gap: 4px;
+    padding-bottom: 4px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+  .navlink {
+    flex: 0 0 auto;
+    font-size: 12px;
+    padding: 10px 12px;
+    white-space: nowrap;
+  }
+  .actions {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+  }
+  .actions .btn {
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+  .title {
+    font-size: 14px;
+  }
+  .sub {
+    font-size: 10px;
+    line-height: 1.3;
+  }
+  .h1 {
+    font-size: 19px;
+  }
+  .lead {
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .globalApiBanner {
+    font-size: 12px;
+    padding: 10px 12px;
+  }
+  .globalApiBannerRow {
+    flex-direction: column;
+  }
+  .globalApiDismiss {
+    width: 100%;
+  }
+  .brokerBarWide {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding: 6px 4px;
+    gap: 4px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .brokerBarWide .brokerTab {
+    flex: 0 0 auto;
+    font-size: 11px;
+    padding: 8px 10px;
+  }
+  .pfSubLedgerBar {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    gap: 6px;
+    padding: 6px;
+  }
+  .pfSubLedgerBar .pfSubTab,
+  .pfSubLedgerBar .insCoTab {
+    flex: 0 0 auto;
+    min-height: 44px;
+    padding: 10px 12px;
+    align-items: center;
+    display: inline-flex;
+  }
+  .brokerTabMain {
+    flex: 0 0 auto;
+  }
+  .pfGrandTotalInner {
+    padding: 12px 12px;
+  }
+  .pfGrandTotalFigRow {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .pfGrandTotalFig {
+    font-size: 1.65rem;
+  }
+  .pfGrandTotalSubRow {
+    font-size: 13px;
+  }
+  .pfBrokerCap {
+    flex: 0 0 auto;
+    margin-left: 0;
+    font-size: 10px;
+    align-self: center;
+    padding-left: 8px;
+  }
+  .pfPieGrid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .pfPieCard {
+    padding: 12px 10px;
+  }
+  .pfTotalsGrid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .pfTotalsBig {
+    font-size: 18px;
+  }
+  .pfEurGridWide {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .pfEurCell {
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--bd);
+  }
+  .pfEurCell:last-child {
+    border-bottom: none;
+  }
+  .foot {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px;
+  }
+  .footLinks {
+    justify-content: flex-start;
+    width: 100%;
+  }
+  .instrStickyTop {
+    top: 52px;
+  }
+  .pfAddRowGrid {
+    grid-template-columns: repeat(auto-fill, minmax(100%, 1fr));
+  }
+  .pfToolRow {
+    flex-direction: column;
+  }
+  .pfToolRow .btn.ghost {
+    width: 100%;
+    min-width: 0;
+  }
+}
