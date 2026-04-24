@@ -1,96 +1,67 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Stock Insight</title>
+<!doctype html>
+<html lang="en" data-build="2.36">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0a0f18" />
+    <meta
+      name="description"
+      content="John’sStockApp — search, quotes, watchlist, portfolios (PWA)."
+    />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.svg" />
+    <link rel="stylesheet" href="/styles.css?v=2.40" />
+    <title>John’sStockApp</title>
+  </head>
+  <body>
+    <div class="app">
+      <header class="siteHead">
+        <div class="bar">
+          <div class="brand">
+            <span class="logo" aria-hidden="true"></span>
+            <div>
+              <div class="title">John’sStockApp</div>
+              <div class="sub">Search · Quote · Watchlist · Portfolio</div>
+            </div>
+          </div>
+          <nav class="nav" aria-label="Main">
+            <a class="navlink" href="#/search" data-route>Search</a>
+            <a class="navlink" href="#/watchlist" data-route>Watchlist</a>
+            <a class="navlink" href="#/portfolio" data-route>Portfolio</a>
+            <a class="navlink" href="#/notes" data-route>Notes</a>
+          </nav>
+          <div class="actions">
+            <a
+              class="btn healthTopBtn"
+              href="/api/health"
+              target="_blank"
+              rel="noopener"
+              id="linkApiHealth"
+              title="Opens in a new tab. You should see JSON with ok: true when the server is running."
+              >API health</a>
+            <button type="button" class="btn ghost" id="btnInstall" hidden>Install</button>
+            <button type="button" class="btn ghost" id="btnTheme">Theme</button>
+          </div>
+        </div>
+      </header>
 
-  <style>
-    body {
-      margin: 0;
-      padding: 20px;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #f5f7fa;
-      color: #222;
-    }
+      <main class="main">
+        <div id="globalApiBanner" class="globalApiBanner" role="region" aria-live="polite" hidden></div>
+        <section class="panel" id="view"></section>
+      </main>
 
-    h1 {
-      text-align: center;
-      font-weight: 600;
-      margin-bottom: 30px;
-    }
-
-    .container {
-      max-width: 500px;
-      margin: auto;
-      background: white;
-      padding: 20px;
-      border-radius: 16px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-    }
-
-    input {
-      width: 100%;
-      padding: 14px;
-      font-size: 16px;
-      border-radius: 10px;
-      border: 1px solid #ccc;
-      margin-bottom: 15px;
-    }
-
-    button {
-      width: 100%;
-      padding: 14px;
-      font-size: 16px;
-      border: none;
-      border-radius: 10px;
-      background: #007aff;
-      color: white;
-      font-weight: 600;
-      cursor: pointer;
-    }
-
-    button:hover {
-      background: #0063cc;
-    }
-
-    .result {
-      margin-top: 20px;
-      padding: 15px;
-      background: #f0f4ff;
-      border-radius: 12px;
-      font-size: 15px;
-      line-height: 1.6;
-      white-space: pre-wrap;
-    }
-  </style>
-</head>
-
-<body>
-
-  <h1>Stock Insight</h1>
-
-  <div class="container">
-    <input id="symbolInput" type="text" placeholder="Enter stock symbol (AAPL, INFY, TSLA)">
-    <button onclick="fetchStock()">Get Data</button>
-
-    <div id="output" class="result"></div>
-  </div>
-
-  <script>
-    async function fetchStock() {
-      const symbol = document.getElementById("symbolInput").value.trim();
-      if (!symbol) return;
-
-      const url = `https://small-art-5ed0.johnap81.workers.dev/?symbol=${symbol}`;
-
-      const response = await fetch(url);
-      const data = await response.json();
-
-      document.getElementById("output").textContent =
-        JSON.stringify(data, null, 2);
-    }
-  </script>
-
-</body>
+      <footer class="foot">
+        <span>v2.36</span>
+        <span class="footLinks">
+          <a href="/mobile.html">Phone (same Wi-Fi)</a>
+          <a href="/README.html#checklist-daily">Run checklist</a>
+          <a href="/README.html#python3-explained">What is python3?</a>
+          <a class="footHealth" href="/api/health" target="_blank" rel="noopener">API health (opens new tab)</a>
+          <a href="/README.html">Help</a>
+        </span>
+      </footer>
+    </div>
+    <script type="module" src="/app.js?v=2.39"></script>
+  </body>
 </html>
