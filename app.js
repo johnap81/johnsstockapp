@@ -653,6 +653,21 @@ function migrateLegacyPortfolioFromV1() {
 
 const $ = (id) => document.getElementById(id);
 
+function isAppDevOnLocalhost() {
+  const h = (location.hostname || "").toLowerCase();
+  return h === "localhost" || h === "127.0.0.1" || h === "[::1]";
+}
+
+function isFileProtocol() {
+  return location.protocol === "file:";
+}
+
+/** True when the app is opened on the public internet (Render, custom domain) — not file://, not localhost. */
+function isHostedWebApp() {
+  if (isFileProtocol()) return false;
+  return !isAppDevOnLocalhost();
+}
+
 /** Cancels in-flight search when the user types again (debounce does not cancel fetch alone). */
 let _searchAbort = null;
 
@@ -983,17 +998,37 @@ async function refreshGlobalApiBanner() {
     paintGlobalApiBanner(el, _healthBannerCache.j, _healthBannerCache.ok);
     return;
   }
+  const maxAttempts = isHostedWebApp() ? 3 : 1;
+  const delays = [0, 400, 1000];
   let j = null;
   let ok = false;
-  try {
-    const r = await fetch("/api/health", { cache: "no-store" });
-    ok = r.ok;
-    j = await r.json();
-  } catch {
-    j = null;
-    ok = false;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (delays[attempt] > 0) {
+      await new Promise((r) => setTimeout(r, delays[attempt]));
+    }
+    try {
+      const r = await fetch("/api/health", { cache: "no-store" });
+      const text = await r.text();
+      let parsed = null;
+      if (text) {
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          parsed = null;
+        }
+      }
+      ok = r.ok && parsed != null && typeof parsed === "object";
+      if (ok) {
+        j = parsed;
+        break;
+      }
+      j = parsed;
+    } catch {
+      j = null;
+      ok = false;
+    }
   }
-  _healthBannerCache = { t: now, j, ok };
+  _healthBannerCache = { t: Date.now(), j, ok };
   paintGlobalApiBanner(el, j, ok);
 }
 
@@ -1002,10 +1037,26 @@ function paintGlobalApiBanner(el, j, fetchOk) {
     el.hidden = false;
     el.className = "globalApiBanner globalApiBannerErr";
     const origin = `${location.protocol}//${location.host}`;
-    const fileProto = location.protocol === "file:";
-    el.innerHTML = fileProto
-      ? `<strong>Opened as a file.</strong> The API lives in <code>server.py</code> — use the app from the server URL instead. In Finder, double‑click <code>JohnsStockApp.command</code>, then open <strong><code>http://localhost:8844</code></strong> (or the port printed in Terminal). <a href="/README.html#checklist-daily">Checklist</a>`
-      : `<strong>API unreachable at <code>${esc(origin)}</code>.</strong> Start <code>server.py</code> from this project folder (double‑click <code>JohnsStockApp.command</code>) and keep that Terminal window open. Port must match the URL (see <code>PORT</code> in <code>.env</code>). <a href="/README.html#checklist-daily">Checklist</a> · <a href="/api/health" target="_blank" rel="noopener">Try <code>/api/health</code></a>`;
+    if (isFileProtocol()) {
+      el.innerHTML = `<strong>Opened as a file.</strong> The API lives in <code>server.py</code> — use the app from the server URL instead. In Finder, double‑click <code>JohnsStockApp.command</code>, then open <strong><code>http://localhost:8844</code></strong> (or the port printed in Terminal). <a href="/README.html#checklist-daily">Checklist</a>`;
+    } else if (isAppDevOnLocalhost()) {
+      el.innerHTML = `<strong>API unreachable at <code>${esc(origin)}</code>.</strong> Start <code>server.py</code> from this project folder (double‑click <code>JohnsStockApp.command</code>) and keep that Terminal window open. Port must match the URL (see <code>PORT</code> in <code>.env</code>). <a href="/README.html#checklist-daily">Checklist</a> · <a href="/api/health" target="_blank" rel="noopener">Try <code>/api/health</code></a>`;
+    } else {
+      el.innerHTML = `<div class="globalApiBannerRow">
+      <div class="globalApiBannerBody">
+        <strong>Could not load status from the server (yet).</strong>
+        <span class="sml"> On <strong>free</strong> cloud hosting the app may need <strong>~30–60 seconds</strong> to wake, or the network hiccuped. This is <em>not</em> something you fix in Terminal. Wait, then <strong>reload the page</strong> or use <strong>Retry</strong>. <a href="/api/health" target="_blank" rel="noopener">Open <code>/api/health</code> in a new tab</a> — you should see <code>ok: true</code> in the JSON when the server is ready.</span>
+      </div>
+      <button type="button" class="btn ghost smlBtn" id="hostedApiBannerRetry">Retry</button>
+    </div>`;
+      const btn = el.querySelector("#hostedApiBannerRetry");
+      if (btn instanceof HTMLButtonElement) {
+        btn.addEventListener("click", () => {
+          _healthBannerCache = null;
+          void refreshGlobalApiBanner();
+        });
+      }
+    }
     return;
   }
   const rev = j.api_revision;
@@ -1017,7 +1068,11 @@ function paintGlobalApiBanner(el, j, fetchOk) {
     el.className = "globalApiBanner globalApiBannerErr";
     const cur = Number.isFinite(revNum) ? String(revNum) : "missing";
     const hp = location.port ? `${location.protocol}//${location.hostname}:${location.port}` : `${location.protocol}//${location.host}`;
-    el.innerHTML = `<strong>The server on this port is still an old copy.</strong> Close any Terminal that was running the app, then in <strong>Finder</strong> go to your project folder and <strong>double‑click <code>JohnsStockApp.command</code></strong> — it now <strong>stops the old listener for you</strong> and starts the new server. Then open <a href="${esc(hp)}/api/health" target="_blank" rel="noopener"><code>/api/health</code></a> and check for <code>api_revision</code> ≥ <strong>${MIN_API_REVISION}</strong> and <code>llm_commentary</code> (yours was: <code>${esc(cur)}</code>). Same folder: <code>OPEN_APP_URL.txt</code>.`;
+    if (isHostedWebApp()) {
+      el.innerHTML = `<strong>Server API looks older than this page needs.</strong> <span class="sml">Redeploy the latest <code>server.py</code> on your host (e.g. <strong>Render → Manual deploy</strong> from the current <code>main</code> branch), then hard-reload. Last seen <code>api_revision</code>: <code>${esc(cur)}</code> (need ≥ <strong>${MIN_API_REVISION}</strong> and <code>llm_commentary</code> in <a href="${esc(hp)}/api/health" target="_blank" rel="noopener">/api/health</a>).</span>`;
+    } else {
+      el.innerHTML = `<strong>The server on this port is still an old copy.</strong> Close any Terminal that was running the app, then in <strong>Finder</strong> go to your project folder and <strong>double‑click <code>JohnsStockApp.command</code></strong> — it now <strong>stops the old listener for you</strong> and starts the new server. Then open <a href="${esc(hp)}/api/health" target="_blank" rel="noopener"><code>/api/health</code></a> and check for <code>api_revision</code> ≥ <strong>${MIN_API_REVISION}</strong> and <code>llm_commentary</code> (yours was: <code>${esc(cur)}</code>). Same folder: <code>OPEN_APP_URL.txt</code>.`;
+    }
     return;
   }
   const cfg = j.llm_commentary?.configured;
@@ -1038,10 +1093,13 @@ function paintGlobalApiBanner(el, j, fetchOk) {
     }
     el.hidden = false;
     el.className = "globalApiBanner globalApiBannerInfo";
+    const llmHostHint = isHostedWebApp()
+      ? " Add a provider key in <strong>your host’s environment</strong> (e.g. Render → <em>Environment</em>), same variable names as <code>.env.example</code> on your Mac — not the chat here."
+      : " Add a provider key to <code>.env</code> on the Mac and restart the app. I never need your key in chat.";
     el.innerHTML = `<div class="globalApiBannerRow">
       <div class="globalApiBannerBody">
         <strong>No AI keys on the server yet.</strong>
-        <span class="sml"> This yellow strip is only a reminder — search, quotes, and portfolio still work. For <strong>Fundamentals → Generate commentary</strong> and <strong>Ask AI</strong>, add an API key to <code>.env</code> on the Mac and restart the app (see below). I never need your key in chat.</span>
+        <span class="sml"> This yellow strip is only a reminder — search, quotes, and portfolio still work. For <strong>Fundamentals → Generate commentary</strong> and <strong>Ask AI</strong>,${llmHostHint}</span>
       </div>
       <button type="button" class="btn ghost smlBtn globalApiDismiss" aria-label="Hide this reminder for this session">Dismiss</button>
     </div>`;
@@ -2460,14 +2518,18 @@ async function loadHistoryChart(sym, ex) {
     } catch {
       if (tryApplyHistSnap(sym, ex, requestedRange, cv, mount)) return;
       _histChartBars = null;
-      st.textContent = "Chart: server returned non-JSON.";
+      st.textContent = isHostedWebApp()
+        ? "Chart: server returned a non-JSON response (host waking up or a short network error). Wait ~30s and refresh, or retry the chart tab."
+        : "Chart: server returned non-JSON.";
       return;
     }
     if (!stockRes.ok) {
       const det = String(j.detail || j.error || stockRes.status);
       const unk = stockRes.status === 404 && /unknown route/i.test(String(j.error || ""));
       const extra = unk
-        ? ` Stop the old server on this port (Terminal: Ctrl+C, or run: lsof -iTCP:${location.port} -sTCP:LISTEN then kill that PID), then start python3 server.py again. /api/health should show api_revision: 10.`
+        ? isHostedWebApp()
+          ? " Redeploy the latest app on your host, or check /api/health in a new tab."
+          : ` Stop the old server on this port (Terminal: Ctrl+C, or run: lsof -iTCP:${location.port} -sTCP:LISTEN then kill that PID), then start python3 server.py again. /api/health should show api_revision: 10.`
         : "";
       const h = j.hint ? ` ${j.hint}` : "";
       if (tryApplyHistSnap(sym, ex, requestedRange, cv, mount)) return;
