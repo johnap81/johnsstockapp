@@ -924,6 +924,17 @@ function eurPerUnitToEur(eurPer, ccyRaw) {
   return undefined;
 }
 
+/** Convert a quote price in `qCcy` to an amount in `rowCcy` using the same ECB/Frankfurter `eur_per_unit` table. */
+function quotePriceToRowCcy(px, qCcyRaw, rowCcyRaw, eurPer) {
+  const a = normalizeCcyForFx(qCcyRaw);
+  const b = normalizeCcyForFx(rowCcyRaw);
+  if (!a || !b || a === b) return px;
+  const e1 = eurPer ? eurPerUnitToEur(eurPer, a) : undefined;
+  const e2 = eurPer ? eurPerUnitToEur(eurPer, b) : undefined;
+  if (e1 == null || e2 == null || e2 === 0) return px;
+  return (px * e1) / e2;
+}
+
 /** Ccy column label: euro zone → symbol, else ISO. */
 function formatCcyLabel(ccy) {
   const c = normalizeCcyForFx(ccy);
@@ -5008,13 +5019,25 @@ function buildQuoteUrlParams(sym, ex, brokerId) {
   return u;
 }
 
+/** T212: one quote per **open position** (`t212Ticker`); the same display sym can list on more than one venue. */
+function t212QuoteKey(row) {
+  const t = String(row.t212Ticker || "").trim();
+  if (t) return t;
+  return `${String(row.sym || "").trim().toUpperCase()}|${String(row.ex || "").trim().toUpperCase()}`;
+}
+
+function rowMatchesT212QuoteKey(row, key) {
+  const t = String(row.t212Ticker || "").trim();
+  if (t) return t === key;
+  return t212QuoteKey(row) === key;
+}
+
 /** Update `last` (and optional `pfKind`) from `/api/quote` for all rows in a broker. */
 async function applyLiveQuotesToRowsForBroker(bundle, b) {
   const rows = bundle.brokers[b].rows;
-  const syms = [...new Set(rows.map((r) => r.sym).filter(Boolean))];
-  if (!syms.length) return 0;
-  /** Yahoo `*-USD` is USD / coin; rows in **EUR** get USD→€ using ECB table. */
-  let fxEur = /** @type {{ eur_per_unit: Record<string, number> } | null} */ (null);
+  if (!rows.length) return 0;
+  /** Yahoo `*-USD` is USD / coin; some rows get USD→row-ccy using ECB/Frankfurter. */
+  let fxEur = null;
   if (b === PF_CRYPTO || b === PF_T212) {
     try {
       fxEur = await fetchEurFxTable();
@@ -5022,14 +5045,42 @@ async function applyLiveQuotesToRowsForBroker(bundle, b) {
       fxEur = null;
     }
   }
+  const eurPer = fxEur?.eur_per_unit;
+  const usdToEur = eurPer ? eurPerUnitToEur(eurPer, "USD") : undefined;
+
+  /** @type { { k: string, row0: (typeof rows)[0] }[] } */
+  const iter = [];
+  if (b === PF_T212) {
+    const seen = new Set();
+    for (const row0 of rows) {
+      const k = t212QuoteKey(row0);
+      if (!k || seen.has(k)) continue;
+      if (!String(row0.sym || "").trim()) continue;
+      seen.add(k);
+      iter.push({ k, row0 });
+    }
+  } else {
+    for (const s of new Set(rows.map((r) => r.sym).filter(Boolean))) {
+      const row0 = rows.find((r) => r.sym === s) || null;
+      iter.push({ k: s, row0 });
+    }
+  }
+  if (!iter.length) return 0;
   let n = 0;
-  for (let i = 0; i < syms.length; i++) {
-    const s = syms[i];
-    status(`Quote ${i + 1}/${syms.length}: ${s}`);
-    const row0 = rows.find((r) => r.sym === s);
-    const ex = row0?.ex || "";
+  for (let i = 0; i < iter.length; i++) {
+    const { k, row0 } = iter[i];
+    const s = b === PF_T212 && row0 ? String(row0.sym || "").trim() : k;
+    if (!s) continue;
+    const ex = row0 ? String(row0.ex || "") : rows.find((r) => r.sym === s)?.ex || "";
+    status(
+      b === PF_T212 && row0
+        ? `Quote ${i + 1}/${iter.length}: ${s}${ex ? " · " + ex : ""}`
+        : `Quote ${i + 1}/${iter.length}: ${s}`,
+    );
     const u =
-      b === PF_T212 && row0 && isCryptoLikeT212Row(row0) ? buildQuoteUrlParams(s, ex, PF_CRYPTO) : buildQuoteUrlParams(s, ex, b);
+      b === PF_T212 && row0 && isCryptoLikeT212Row(row0)
+        ? buildQuoteUrlParams(s, ex, PF_CRYPTO)
+        : buildQuoteUrlParams(s, ex, b);
     try {
       const r = await fetch(`/api/quote?${u}`);
       if (!r.ok) continue;
@@ -5037,13 +5088,16 @@ async function applyLiveQuotesToRowsForBroker(bundle, b) {
       const q = Array.isArray(j) ? j[0] : null;
       const px = num(q?.price);
       if (px > 0) {
-        const eurPer = fxEur?.eur_per_unit;
-        const usdToEur = eurPer ? eurPerUnitToEur(eurPer, "USD") : undefined;
+        const qCcy = String(q?.currency || "").trim();
         rows.forEach((row) => {
-          if (row.sym !== s) return;
-          let v = px;
+          const same = b === PF_T212 && row0 ? rowMatchesT212QuoteKey(row, t212QuoteKey(row0)) : row.sym === s;
+          if (!same) return;
           const ccyN = normalizeCcyForFx(row.ccy);
-          if (eurPer && usdToEur != null && ccyN === "EUR" && (b === PF_CRYPTO || (b === PF_T212 && isCryptoLikeT212Row(row)))) {
+          let v = px;
+          if (b === PF_T212) {
+            if (isCryptoLikeT212Row(row) && eurPer && usdToEur != null && ccyN === "EUR") v = px * usdToEur;
+            else v = eurPer ? quotePriceToRowCcy(px, qCcy || ccyN, row.ccy, eurPer) : px;
+          } else if (eurPer && usdToEur != null && ccyN === "EUR" && b === PF_CRYPTO) {
             v = px * usdToEur;
           }
           row.last = v;
@@ -5053,7 +5107,8 @@ async function applyLiveQuotesToRowsForBroker(bundle, b) {
       const qt = String(q?.quoteType || q?.instrumentType || "").trim();
       if (qt) {
         rows.forEach((row) => {
-          if (row.sym === s) row.pfKind = qt;
+          const same = b === PF_T212 && row0 ? rowMatchesT212QuoteKey(row, t212QuoteKey(row0)) : row.sym === s;
+          if (same) row.pfKind = qt;
         });
       }
     } catch {

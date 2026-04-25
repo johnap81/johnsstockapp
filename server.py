@@ -285,7 +285,7 @@ def _t212_infer_exchange(ticker: str) -> str:
     if "_GB_EQ" in u or u.endswith("_GB_EQ"):
         return "LSE"
     if "_DE_EQ" in u or u.endswith("_DE_EQ"):
-        return "FRA"
+        return "XETRA"
     if "_EU_EQ" in u or u.endswith("_EU_EQ"):
         return "EU"
     return ""
@@ -301,26 +301,6 @@ def _t212_position_is_crypto(inst: dict, p: dict) -> bool:
     if "CRYPTO" in tick or "_CRY" in tick:
         return True
     return False
-
-
-def _t212_position_to_row(p: dict, inst: dict) -> dict:
-    ticker = str((inst or {}).get("ticker") or p.get("ticker") or "").strip()
-    name = str((inst or {}).get("name") or p.get("name") or "").strip()
-    ccy = str((inst or {}).get("currencyCode") or p.get("currencyCode") or "USD").strip().upper() or "USD"
-    qty = _t212_float(p.get("quantity"))
-    avg = _t212_float(p.get("averagePricePaid") if p.get("averagePricePaid") is not None else p.get("averagePrice"))
-    last = _t212_float(p.get("currentPrice"))
-    return {
-        "sym": _t212_display_sym(ticker),
-        "t212Ticker": ticker,
-        "nm": name,
-        "ex": _t212_infer_exchange(ticker),
-        "ccy": ccy,
-        "qty": qty,
-        "avg": avg,
-        "last": last,
-        "pfSource": "t212",
-    }
 
 
 def handle_t212_rows(handler: SimpleHTTPRequestHandler) -> None:
@@ -351,6 +331,8 @@ def handle_t212_rows(handler: SimpleHTTPRequestHandler) -> None:
             },
         )
     rows_raw = _t212_normalize_positions_list(data)
+    account_ccy = _t212_account_ccy_for_positions(auth)
+    eur_per = _t212_eur_per_for_t212()
     stocks: list[dict] = []
     crypto: list[dict] = []
     for p in rows_raw:
@@ -360,7 +342,7 @@ def handle_t212_rows(handler: SimpleHTTPRequestHandler) -> None:
         if not isinstance(inst, dict):
             inst = {}
         is_c = _t212_position_is_crypto(inst, p)
-        row = _t212_position_to_row(p, inst)
+        row = _t212_build_position_row(p, inst, is_c, account_ccy, eur_per)
         if is_c:
             crypto.append(row)
         else:
@@ -646,9 +628,9 @@ def yahoo_resolve(symbol: str, exchange: str | None) -> str:
         return f"{s}.NS"
     if ex in ("BSE", "BOM", "BO"):
         return f"{s}.BO"
-    if ex in ("LSE", "LON"):
+    if ex in ("LSE", "LON", "L"):
         return f"{s}.L"
-    if ex in ("XETRA", "ETR", "GER", "DE"):
+    if ex in ("XETRA", "ETR", "GER", "DE", "FRA", "DUS", "MUN", "STU", "GETTEX"):
         return f"{s}.DE"
     if ex in ("SW", "SWX"):
         return f"{s}.SW"
@@ -907,6 +889,342 @@ def yahoo_search(q: str, limit: int) -> list[dict]:
         _YAHOO_SRCH_CACHE[key] = (now, out)
         _yahoo_search_prune(now, ttl)
     return out
+
+
+# --- Trading 212: account currency, ISIN → Yahoo, venue → row ccy (API row prices are in account ccy) ---
+T212Y2_LOCK = threading.Lock()
+T212_ISIN_PICK: dict[str, tuple[float, dict | None]] = {}
+
+
+def _t212_account_ccy_for_positions(auth: str) -> str:
+    try:
+        base = trading212_base_url().rstrip("/")
+        data = fetch_json(
+            f"{base}/api/v0/equity/account/summary",
+            timeout_s=12.0,
+            extra={"Authorization": auth},
+        )
+        if isinstance(data, dict):
+            c = str(
+                data.get("currency")
+                or data.get("currencyCode")
+                or data.get("accountCurrency")
+                or ""
+            ).strip().upper()
+            if c and len(c) == 3 and c.isalpha():
+                return c
+    except Exception:  # noqa: BLE001
+        pass
+    return "USD"
+
+
+def _t212_eur_per_for_t212() -> dict[str, float] | None:
+    try:
+        p = build_fx_eur_payload()
+        m = p.get("eur_per_unit")
+        if not isinstance(m, dict):
+            return None
+        out: dict[str, float] = {}
+        for k, v in m.items():
+            c = str(k).upper()
+            if not c:
+                continue
+            try:
+                f = float(v)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue
+            if f == f and f > 0:
+                out[c] = f
+        return out or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _t212_fx_convert_amount(amt: float, fr: str, to: str, eur_per: dict[str, float] | None) -> float:
+    a = (fr or "").strip().upper()
+    b = (to or "").strip().upper()
+    if eur_per is None or a == b or not a or not b or not (amt and amt == amt):
+        return amt
+    p1 = eur_per.get(a)
+    p2 = eur_per.get(b)
+    if p1 is None or p2 is None or p2 == 0.0:
+        return amt
+    return (float(amt) * p1) / p2
+
+
+def _t212_find_instrument_in_cache(ticker: str) -> dict:
+    t = (ticker or "").strip()
+    if not t:
+        return {}
+    with T212I_LOCK:
+        for o in T212I_ITEMS:
+            if isinstance(o, dict) and str(o.get("ticker") or "").strip() == t:
+                return dict(o)
+    return {}
+
+
+def _t212_venue_code_from_ticker(ticker: str) -> str:
+    t = (ticker or "").strip().upper()
+    if t.endswith("_EQ") and t.count("_") >= 2:
+        parts = t.rsplit("_", 2)
+        if len(parts) == 3 and parts[2] == "EQ" and (2 <= len(parts[1]) <= 4) and parts[0]:
+            return parts[1]
+    return ""
+
+
+def _t212_listing_ccy_from_venue(venue: str) -> str | None:
+    v = (venue or "").strip().upper()
+    m = {
+        "US": "USD",
+        "GB": "GBP",
+        "CH": "CHF",
+        "SE": "SEK",
+        "NO": "NOK",
+        "DK": "DKK",
+        "PL": "PLN",
+        "CZ": "CZK",
+        "HU": "HUF",
+        "RO": "RON",
+        "DE": "EUR",
+        "FR": "EUR",
+        "IT": "EUR",
+        "ES": "EUR",
+        "NL": "EUR",
+        "AT": "EUR",
+        "BE": "EUR",
+        "IE": "EUR",
+        "PT": "EUR",
+        "FI": "EUR",
+        "EU": "EUR",
+        "GR": "EUR",
+        "LU": "EUR",
+    }
+    return m.get(v)
+
+
+def _t212_ex_from_ticker_venue(venue: str) -> str:
+    v = (venue or "").strip().upper()
+    m = {
+        "US": "NASDAQ",
+        "GB": "LSE",
+        "DE": "XETRA",
+        "AT": "VIE",
+        "FR": "EPA",
+        "NL": "AMS",
+        "IT": "MIL",
+        "ES": "BME",
+        "SE": "STO",
+        "NO": "OSL",
+        "CH": "SWX",
+        "BE": "BRU",
+        "IE": "LSE",
+        "EU": "XETRA",
+        "PL": "WAR",
+    }
+    if v in m:
+        return m[v]
+    if v in ("CZ", "HU", "RO", "PL"):
+        return "XETRA"
+    return "NASDAQ"
+
+
+def _t212_yahoo_ex_from_listing_symbol(ys: str) -> str:
+    u = (ys or "").strip().upper()
+    for suf, ex in (
+        (".DE", "XETRA"),
+        (".F", "FRA"),
+        (".L", "LSE"),
+        (".PA", "EPA"),
+        (".AS", "AMS"),
+        (".MI", "MIL"),
+        (".MC", "BME"),
+        (".SW", "SWX"),
+        (".ST", "STO"),
+        (".OL", "OSL"),
+        (".VI", "VIE"),
+        (".IR", "LSE"),
+        (".BR", "BRU"),
+        (".WA", "WAR"),
+    ):
+        if u.endswith(suf):
+            return ex
+    if "." not in (ys or ""):
+        return "NASDAQ"
+    return "NASDAQ"
+
+
+def _t212_display_base_from_yahoo(ys: str) -> str:
+    yf = (ys or "").strip()
+    if not yf:
+        return yf
+    u = yf.upper()
+    for suf in (".DE", ".L", ".PA", ".AS", ".MI", ".MC", ".SW", ".ST", ".OL", ".VI", ".F", ".IR", ".CO", ".TO", ".NS", ".BO", ".BR", ".WA"):
+        if u.endswith(suf) and len(yf) > len(suf) + 1:
+            return yf[: -len(suf)]
+    if "." in yf:
+        return yf.rsplit(".", 1)[0]
+    return yf
+
+
+def _t212_yahoo_isin_cache_get(key: str) -> dict | None:
+    with T212Y2_LOCK:
+        ent = T212_ISIN_PICK.get(key)
+    if not ent:
+        return None
+    ts, row = ent
+    if time.monotonic() - ts > 4 * 3600.0:  # 4h
+        with T212Y2_LOCK:
+            T212_ISIN_PICK.pop(key, None)
+        return None
+    return row if isinstance(row, dict) else None
+
+
+def _t212_yahoo_isin_cache_set(key: str, row: dict | None) -> None:
+    with T212Y2_LOCK:
+        T212_ISIN_PICK[key] = (time.monotonic(), row)
+
+
+def _t212_yahoo_isin_row(isin: str, venue: str) -> dict | None:
+    q = re.sub(r"\s+", "", (isin or "")).upper()
+    if not q or len(q) < 9:
+        return None
+    ven = (venue or "").upper()
+    ckey = f"{q}|{ven}"
+    hit = _t212_yahoo_isin_cache_get(ckey)
+    if hit is not None:
+        return hit
+
+    def score_row(r: dict) -> int:
+        symu = (str(r.get("symbol") or "")).upper()
+        qt = (str(r.get("quoteType") or "")).upper()
+        if qt and "CRYPT" in qt:
+            return -1000
+        sc = 0
+        if "EQU" in qt or "ETF" in qt or qt in ("EQUITY", "ETF") or "STOCK" in qt:
+            sc += 1
+        if ven in ("DE", "XETRA", "FRA", "DUS", "MUN", "STU", "ETR", "GETTEX"):
+            if symu.endswith((".DE", ".F", ".DUS", ".FRA", ".F")):
+                sc += 20
+        elif ven in ("GB", "LON", "LSE"):
+            if symu.endswith(".L"):
+                sc += 20
+        elif ven in ("FR", "EPA", "PA"):
+            if symu.endswith(".PA"):
+                sc += 20
+        elif ven in ("NL", "EAM", "AS", "AMS"):
+            if symu.endswith(".AS"):
+                sc += 20
+        elif ven in ("US", "NY", "NYS", "NAS"):
+            if not ("." in symu and not symu.endswith((".BIO", "WS"))):
+                if "." not in symu and symu and symu.isalnum() and 1 < len(symu) < 6:
+                    sc += 8
+        elif ven in ("EU",) and (symu.endswith((".AS", ".DE", ".L", ".PA")) or "." not in symu):
+            sc += 2
+        else:
+            sc += 0
+        ccyv = (str(r.get("currency") or "")).upper()
+        if ccyv in ("EUR", "GBP", "CHF", "SEK", "NOK", "PLN", "CZK", "HUF", "DKK", "USD"):
+            sc += 1
+        return sc
+
+    try:
+        items = yahoo_search(q, 8)
+    except Exception:  # noqa: BLE001
+        return None
+    cands = [x for x in (items or []) if isinstance(x, dict)]
+    if not cands:
+        return None
+    best = max(cands, key=score_row)
+    if not isinstance(best, dict):
+        return None
+    _t212_yahoo_isin_cache_set(ckey, best)
+    return best
+
+
+def _t212_build_position_row(
+    p: dict,
+    inst0: dict,
+    is_crypto: bool,
+    account_ccy: str,
+    eur_per: dict[str, float] | None,
+) -> dict:
+    inst = {**_t212_find_instrument_in_cache(str((inst0 or {}).get("ticker") or "")), **(inst0 or {})}
+    ticker = str((inst or {}).get("ticker") or p.get("ticker") or "").strip()
+    name = str((inst or {}).get("name") or p.get("name") or "").strip()
+    raw_isin = str((inst or {}).get("isin") or "").strip()
+    isin = re.sub(r"\s+", "", raw_isin).upper() or None
+    qty = _t212_float(p.get("quantity"))
+    avg0 = _t212_float(p.get("averagePricePaid") if p.get("averagePricePaid") is not None else p.get("averagePrice"))
+    last0 = _t212_float(p.get("currentPrice"))
+    acc = (account_ccy or "USD").strip().upper() or "USD"
+
+    if is_crypto:
+        ccy = str(
+            (inst or {}).get("currencyCode")
+            or (inst or {}).get("currency")
+            or p.get("currencyCode")
+            or "USD"
+        )
+        ccy = (ccy or "USD").strip().upper() or "USD"
+        return {
+            "sym": _t212_display_sym(ticker),
+            "t212Ticker": ticker,
+            "nm": name,
+            "ex": _t212_infer_exchange(ticker) or "crypto",
+            "ccy": ccy,
+            "qty": qty,
+            "avg": avg0,
+            "last": last0,
+            "pfSource": "t212",
+        }
+
+    venue = _t212_venue_code_from_ticker(ticker)
+    ccy_m = str((inst or {}).get("currencyCode") or (inst or {}).get("currency") or "").strip().upper()
+    ccy_venue = _t212_listing_ccy_from_venue(venue)
+    yh: dict | None = _t212_yahoo_isin_row(isin, venue) if isin else None
+    ysym = str((yh or {}).get("symbol") or "").strip()
+
+    if yh and ysym:
+        sym = _t212_display_base_from_yahoo(ysym)
+        yccy = str((yh or {}).get("currency") or "").strip().upper()
+        ex_row = _t212_yahoo_ex_from_listing_symbol(ysym)
+        ccy2 = yccy or ccy_venue or ccy_m or "USD"
+    else:
+        sym = _t212_display_sym(ticker)
+        ccy2 = ccy_venue
+        if not ccy2 and ccy_m and len(ccy_m) == 3 and ccy_m.isalpha():
+            ccy2 = ccy_m
+        ccy2 = ccy2 or acc
+        ex_row = (venue and _t212_ex_from_ticker_venue(venue)) or _t212_infer_exchange(ticker) or ""
+
+    ccy2 = (ccy2 or "USD").strip().upper() or "USD"
+    if not (yh and ysym) and ccy_venue and ccy2 == acc and ccy_venue != ccy2:
+        ccy2 = ccy_venue
+
+    if acc != ccy2:
+        avg1 = _t212_fx_convert_amount(avg0, acc, ccy2, eur_per)
+        last1 = _t212_fx_convert_amount(last0, acc, ccy2, eur_per)
+    else:
+        avg1, last1 = avg0, last0
+
+    ex_row = (ex_row or (venue and _t212_ex_from_ticker_venue(venue)) or _t212_infer_exchange(ticker) or "")
+
+    row: dict = {
+        "sym": sym,
+        "t212Ticker": ticker,
+        "nm": name,
+        "ex": ex_row,
+        "ccy": ccy2,
+        "qty": qty,
+        "avg": avg1,
+        "last": last1,
+        "pfSource": "t212",
+    }
+    if isin:
+        row["isin"] = isin
+    if acc != ccy2:
+        row["t212AccountCcy"] = acc
+    return row
 
 
 class _ApiResponseCache:
