@@ -10,6 +10,8 @@ const K = {
   dangerPin: "jsa.dangerPin",
   /** Hide yellow “LLM not configured” strip until next browser session. */
   llmBannerDismiss: "jsa.llmBannerDismiss",
+  /** Last successful GET /api/t212/rows `fetched_at` (ISO) for display next to Sync. */
+  pfT212LastFetch: "jsa.pf.t212LastFetch",
 };
 /** Last successful search query — restored when returning from an instrument (`#/search`). */
 const SEARCH_LAST_Q = "jsa.search.lastQ";
@@ -1585,6 +1587,7 @@ function portfolioHtml() {
       </div>
       <div class="rowgap mt pfToolRow" style="display:flex;flex-wrap:wrap;gap:10px;">
         <button type="button" class="btn" id="btnT212Sync" title="Replaces T212 + Crypto ledgers with open positions (read-only API)">Sync from Trading 212</button>
+        <span class="sml muted pfT212SyncStamp" id="pfT212SyncTime" role="status" hidden></span>
         <button type="button" class="btn" id="btnPfPublish" title="Uploads this device’s portfolio to the server so family can open a read-only link (needs write key in Render)">Publish for family (server)</button>
         <button type="button" class="btn ghost" id="btnRef">Refresh prices</button>
         <button type="button" class="btn ghost" id="btnPfExport">Export CSV</button>
@@ -1891,7 +1894,8 @@ function wire() {
         renderPf();
         const ns = Number(j.n_t212 ?? 0) || 0;
         const nc = Number(j.n_t212_crypto ?? 0) || 0;
-        status(`T212 sync · ${ns} stock/ETF position(s), ${nc} crypto position(s)`);
+        const when = typeof j.fetched_at === "string" && j.fetched_at.trim() ? ` · server ${formatServerIsoLocal(j.fetched_at)}` : "";
+        status(`T212 sync · ${ns} stock/ETF, ${nc} crypto${when}`);
       } catch (e) {
         status(e instanceof Error ? e.message : String(e));
       }
@@ -4993,10 +4997,12 @@ function renderPf() {
   const b = getActiveBroker();
   if (b === PF_INSURANCE) {
     renderPfInsuranceTable(el);
+    paintPfT212SyncTimestamp();
     return;
   }
   if (b === PF_FIXED_DEPOSIT) {
     renderPfFdTable(el);
+    paintPfT212SyncTimestamp();
     return;
   }
   const rowsRaw = loadPfBundle().brokers[b].rows;
@@ -5007,6 +5013,7 @@ function renderPf() {
     pfClearTableMountState();
     renderPfCharts([]);
     void refreshPfCombinedEur();
+    paintPfT212SyncTimestamp();
     return;
   }
   const codes = new Set(rows.map((r) => normalizeCcyForFx(r.ccy)).filter(Boolean));
@@ -5093,6 +5100,7 @@ function renderPf() {
   }
   renderPfCharts(isStockLikePfBroker(b) ? rowsRaw : []);
   void refreshPfCombinedEur();
+  paintPfT212SyncTimestamp();
 }
 
 /** Fetch ECB reference table via this app’s `/api/fx-eur` (retries + safe JSON parse). */
@@ -5510,12 +5518,49 @@ async function fetchTrading212Payload() {
   return j;
 }
 
+function formatServerIsoLocal(iso) {
+  const s = String(iso || "").trim();
+  if (!s) return "—";
+  try {
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return s;
+    return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  } catch {
+    return s;
+  }
+}
+
+function paintPfT212SyncTimestamp() {
+  const el = $("pfT212SyncTime");
+  if (!(el instanceof HTMLElement)) return;
+  try {
+    const raw = sessionStorage.getItem(K.pfT212LastFetch);
+    if (!raw) {
+      el.textContent = "";
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    el.textContent = `Last T212 server fetch: ${formatServerIsoLocal(raw)}`;
+  } catch {
+    el.textContent = "";
+    el.hidden = true;
+  }
+}
+
 async function applyTrading212SyncToBundle() {
   const j = await fetchTrading212Payload();
   const bundle = loadPfBundle();
   bundle.brokers[PF_T212].rows = applyT212RowList(j.t212);
   bundle.brokers[PF_CRYPTO].rows = applyT212RowList(j.t212_crypto);
   savePfBundle(bundle);
+  try {
+    if (typeof j.fetched_at === "string" && j.fetched_at.trim()) {
+      sessionStorage.setItem(K.pfT212LastFetch, j.fetched_at.trim());
+    }
+  } catch {
+    /* ignore */
+  }
   return j;
 }
 

@@ -1,23 +1,47 @@
 :root {
   color-scheme: dark;
-  --bg: #070a10;
-  --card: rgba(255, 255, 255, 0.06);
-  --bd: rgba(255, 255, 255, 0.12);
-  --tx: rgba(255, 255, 255, 0.92);
-  --m: rgba(255, 255, 255, 0.62);
+  --bg: #070b14;
+  --bg-mid: #12082a;
+  --bg-deep: #031a18;
+  --card: rgba(255, 255, 255, 0.07);
+  --card-elev: color-mix(in srgb, rgba(99, 102, 241, 0.12) 1fr, rgba(255, 255, 255, 0.06));
+  --bd: rgba(255, 255, 255, 0.14);
+  --tx: rgba(255, 255, 255, 0.93);
+  --m: rgba(255, 255, 255, 0.64);
   --a: #5eead4;
   --a2: #a78bfa;
+  --a3: #f472b6;
+  --a4: #38bdf8;
   --r: 14px;
   --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --page-grad:
+    radial-gradient(120% 90% at 0% 0%, color-mix(in srgb, var(--a2) 38%, transparent) 0%, transparent 55%),
+    radial-gradient(100% 70% at 100% 0%, color-mix(in srgb, var(--a4) 28%, transparent) 0%, transparent 50%),
+    radial-gradient(90% 60% at 50% 100%, color-mix(in srgb, var(--a3) 18%, transparent) 0%, transparent 45%),
+    linear-gradient(165deg, #060a12 0%, #0c1024 38%, #061a1a 100%);
+  --head-grad: color-mix(in srgb, rgba(12, 16, 32, 0.92) 1fr, transparent);
 }
 
 [data-theme="light"] {
   color-scheme: light;
-  --bg: #f4f5f8;
-  --card: #fff;
-  --bd: rgba(0, 0, 0, 0.1);
-  --tx: rgba(0, 0, 0, 0.9);
-  --m: rgba(0, 0, 0, 0.55);
+  --bg: #f0f2fa;
+  --bg-mid: #faf5ff;
+  --bg-deep: #ecfeff;
+  --card: rgba(255, 255, 255, 0.82);
+  --card-elev: color-mix(in srgb, #fff 88%, rgba(99, 102, 241, 0.14));
+  --bd: rgba(15, 23, 42, 0.12);
+  --tx: rgba(15, 23, 42, 0.92);
+  --m: rgba(15, 23, 42, 0.55);
+  --a: #0d9488;
+  --a2: #7c3aed;
+  --a3: #db2777;
+  --a4: #0284c7;
+  --page-grad:
+    radial-gradient(110% 80% at 0% 0%, color-mix(in srgb, var(--a2) 22%, transparent) 0%, transparent 50%),
+    radial-gradient(90% 60% at 100% 5%, color-mix(in srgb, var(--a4) 20%, transparent) 0%, transparent 48%),
+    radial-gradient(100% 55% at 40% 100%, color-mix(in srgb, var(--a) 12%, transparent) 0%, transparent 42%),
+    linear-gradient(180deg, #f5f3ff 0%, #f8fafc 50%, #ecfeff 100%);
+  --head-grad: color-mix(in srgb, rgba(255, 255, 255, 0.88) 1fr, transparent);
 }
 
 * {
@@ -28,8 +52,11 @@ body {
   height: 100%;
   margin: 0;
   font-family: var(--font);
-  background: var(--bg);
   color: var(--tx);
+  background: var(--bg);
+  background-image: var(--page-grad);
+  background-attachment: fixed;
+  min-height: 100%;
 }
 
 .app {
@@ -43,9 +70,10 @@ body {
   position: sticky;
   top: 0;
   z-index: 6;
-  background: color-mix(in srgb, var(--bg) 96%, transparent);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--bd);
+  background: var(--head-grad);
+  backdrop-filter: blur(14px) saturate(1.2);
+  border-bottom: 1px solid color-mix(in srgb, var(--a2) 22%, var(--bd));
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--tx) 4%, transparent);
 }
 
 .bar {
@@ -68,7 +96,8 @@ body {
   width: 36px;
   height: 36px;
   border-radius: 10px;
-  background: linear-gradient(135deg, var(--a), var(--a2));
+  background: linear-gradient(135deg, var(--a) 0%, var(--a4) 45%, var(--a2) 78%, var(--a3) 100%);
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--a2) 25%, transparent);
 }
 .title {
   font-weight: 800;
@@ -93,17 +122,29 @@ body {
   text-decoration: none;
   font-weight: 700;
   font-size: 13px;
-  padding: 8px 10px;
-  border-radius: 10px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: color-mix(in srgb, var(--card) 50%, transparent);
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
 .navlink:hover {
   color: var(--tx);
-  background: var(--card);
+  background: color-mix(in srgb, var(--a2) 14%, var(--card));
+  border-color: color-mix(in srgb, var(--a) 30%, var(--bd));
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--a2) 12%, transparent);
 }
 .navlink[aria-current="page"] {
-  color: var(--tx);
-  border: 1px solid var(--bd);
-  background: var(--card);
+  color: #f8fafc;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--a) 55%, var(--a4)) 0%, color-mix(in srgb, var(--a2) 70%, var(--a3)) 100%);
+  border-color: color-mix(in srgb, var(--a) 50%, var(--bd));
+  box-shadow: 0 2px 16px color-mix(in srgb, var(--a2) 28%, transparent);
+}
+[data-theme="light"] .navlink[aria-current="page"] {
+  color: #fff;
+  background: linear-gradient(135deg, #0d9488, #6d28d9);
+  border-color: #0d9488;
+  box-shadow: 0 2px 14px rgba(13, 148, 136, 0.28);
 }
 
 /* Instrument workspace (symbol route) */
@@ -169,8 +210,9 @@ body {
 }
 .tabBtn[aria-selected="true"] {
   color: var(--tx);
-  border-color: var(--bd);
-  background: color-mix(in srgb, var(--a) 14%, var(--card));
+  border-color: color-mix(in srgb, var(--a) 30%, var(--bd));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--a2) 16%, var(--card)), var(--card));
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--a) 8%, transparent);
 }
 .tabPanel[hidden] {
   display: none !important;
@@ -206,8 +248,9 @@ body {
   margin: 16px 0 18px;
   padding: 6px;
   border-radius: var(--r);
-  background: var(--card);
-  border: 1px solid var(--bd);
+  background: var(--card-elev);
+  border: 1px solid color-mix(in srgb, var(--a2) 20%, var(--bd));
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--bg) 30%, rgba(0, 0, 0, 0.12));
 }
 .brokerBarWide {
   flex-wrap: wrap;
@@ -233,8 +276,9 @@ body {
 }
 .brokerTab[aria-selected="true"] {
   color: var(--tx);
-  border-color: var(--bd);
-  background: color-mix(in srgb, var(--a2) 12%, var(--card));
+  border-color: color-mix(in srgb, var(--a) 35%, var(--bd));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--a2) 20%, var(--card)), color-mix(in srgb, var(--a) 8%, var(--card)));
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--a2) 15%, transparent);
 }
 .pfBrokerCap {
   margin-left: auto;
@@ -416,10 +460,11 @@ a.btn {
 }
 
 .panel {
-  background: var(--card);
-  border: 1px solid var(--bd);
+  background: var(--card-elev);
+  border: 1px solid color-mix(in srgb, var(--a2) 16%, var(--bd));
   border-radius: var(--r);
   padding: 18px;
+  box-shadow: 0 4px 24px color-mix(in srgb, var(--bg) 40%, rgba(0, 0, 0, 0.08));
 }
 
 .h1 {
@@ -1241,21 +1286,47 @@ a.btn {
 }
 
 .btn {
-  border: 1px solid var(--bd);
-  background: linear-gradient(135deg, color-mix(in srgb, var(--a) 22%, transparent), color-mix(in srgb, var(--a2) 22%, transparent));
-  color: var(--tx);
+  border: 1px solid color-mix(in srgb, var(--a) 32%, var(--bd));
+  background: linear-gradient(
+    140deg,
+    color-mix(in srgb, var(--a) 32%, var(--a4)) 0%,
+    color-mix(in srgb, var(--a2) 40%, #1e1b4b) 100%
+  );
+  color: #f8fafc;
   padding: 10px 14px;
-  border-radius: 10px;
+  border-radius: 11px;
   font-weight: 700;
   cursor: pointer;
   font: inherit;
   touch-action: manipulation;
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--a2) 20%, rgba(0, 0, 0, 0.2));
+  transition: filter 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
 }
 .btn.ghost {
-  background: var(--card);
+  color: var(--tx);
+  background: var(--card-elev);
+  box-shadow: none;
+  border-color: var(--bd);
 }
 .btn:hover {
-  filter: brightness(1.05);
+  filter: brightness(1.08);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--a) 18%, rgba(0, 0, 0, 0.25));
+}
+.btn:active {
+  transform: scale(0.99);
+}
+[data-theme="light"] .btn {
+  color: #fff;
+  background: linear-gradient(140deg, #0d9488, #7c3aed);
+  border-color: #0d9488;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.1);
+}
+[data-theme="light"] .btn.ghost {
+  color: var(--tx);
+  background: var(--card);
+  text-shadow: none;
+  border-color: var(--bd);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--tx) 4%, transparent);
 }
 
 .mt {
@@ -1387,10 +1458,11 @@ a.btn {
 }
 
 .card2 {
-  border: 1px solid var(--bd);
+  border: 1px solid color-mix(in srgb, var(--a2) 18%, var(--bd));
   border-radius: 10px;
   padding: 14px;
-  background: color-mix(in srgb, var(--bg) 30%, transparent);
+  background: color-mix(in srgb, var(--card-elev) 88%, var(--a2) 12%);
+  box-shadow: 0 2px 14px color-mix(in srgb, var(--bg) 50%, transparent);
 }
 
 table {
@@ -1428,7 +1500,9 @@ th {
   align-items: center;
   font-size: 12px;
   color: var(--m);
-  border-top: 1px solid var(--bd);
+  border-top: 1px solid color-mix(in srgb, var(--a2) 20%, var(--bd));
+  background: color-mix(in srgb, var(--head-grad) 1fr, transparent);
+  backdrop-filter: blur(8px);
 }
 .foot a {
   color: var(--m);
@@ -1481,6 +1555,16 @@ code {
   border-radius: var(--r);
   border: 1px solid color-mix(in srgb, var(--a2) 28%, var(--bd));
   background: color-mix(in srgb, var(--a2) 7%, var(--card));
+}
+.pfToolRow {
+  align-items: center;
+}
+.pfT212SyncStamp {
+  flex: 1 1 12rem;
+  min-width: 0;
+  max-width: 32rem;
+  line-height: 1.4;
+  padding: 2px 0;
 }
 .pfToolRow .btn.ghost {
   flex: 1 1 auto;

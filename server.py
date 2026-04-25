@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import concurrent.futures
 import errno
 import json
 import os
@@ -334,6 +335,38 @@ def handle_t212_rows(handler: SimpleHTTPRequestHandler) -> None:
     rows_raw = _t212_normalize_positions_list(data)
     account_ccy = _t212_account_ccy_for_positions(auth)
     eur_per = _t212_eur_per_for_t212()
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    uniq: set[tuple[str, str]] = set()
+    for p in rows_raw:
+        if not isinstance(p, dict):
+            continue
+        i0 = p.get("instrument")
+        if not isinstance(i0, dict):
+            i0 = {}
+        tkr = str((i0 or {}).get("ticker") or p.get("ticker") or "").strip()
+        im = _t212_merged_instrument(tkr, i0)
+        if _t212_position_is_crypto(im, p):
+            continue
+        isin = re.sub(r"\s+", "", str(im.get("isin") or p.get("isin") or "")).upper() or None
+        if not isin:
+            continue
+        tkr2 = str(im.get("ticker") or tkr or "").strip()
+        venue = _t212_venue_code_from_ticker(tkr2)
+        uniq.add((isin, (venue or "").upper()))
+    yh_by_key: dict[tuple[str, str], dict | None] = {}
+    if uniq:
+        n_workers = min(10, max(1, len(uniq)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as ex:
+            fut_map: dict[object, tuple[str, str]] = {}
+            for isi, vu in uniq:
+                fut = ex.submit(_t212_yahoo_isin_row, isi, vu)
+                fut_map[fut] = (isi, vu)
+            for fut in concurrent.futures.as_completed(fut_map):
+                key = fut_map[fut]
+                try:
+                    yh_by_key[key] = fut.result()
+                except Exception:  # noqa: BLE001
+                    yh_by_key[key] = None
     stocks: list[dict] = []
     crypto: list[dict] = []
     for p in rows_raw:
@@ -342,8 +375,18 @@ def handle_t212_rows(handler: SimpleHTTPRequestHandler) -> None:
         inst = p.get("instrument")
         if not isinstance(inst, dict):
             inst = {}
-        is_c = _t212_position_is_crypto(inst, p)
-        row = _t212_build_position_row(p, inst, is_c, account_ccy, eur_per)
+        is_c = _t212_position_is_crypto(
+            _t212_merged_instrument(str((inst or {}).get("ticker") or p.get("ticker") or "").strip(), inst),
+            p,
+        )
+        row = _t212_build_position_row(
+            p,
+            inst,
+            is_c,
+            account_ccy,
+            eur_per,
+            yh_by_key,
+        )
         if is_c:
             crypto.append(row)
         else:
@@ -359,6 +402,7 @@ def handle_t212_rows(handler: SimpleHTTPRequestHandler) -> None:
             "n_t212": len(stocks),
             "n_t212_crypto": len(crypto),
             "env": env_tag,
+            "fetched_at": fetched_at,
         },
     )
 
@@ -964,6 +1008,25 @@ def _t212_find_instrument_in_cache(ticker: str) -> dict:
     return {}
 
 
+def _t212_merged_instrument(ticker: str, inst0: object) -> dict:
+    """
+    Merge API `instrument` with the instruments metadata cache. The positions payload
+    sometimes omits `currencyCode` / `isin` / `name` while the cache (once loaded) has
+    the listing fields — needed for non-USD ccy and Yahoo ISIN search.
+    """
+    t = (ticker or "").strip()
+    up = inst0 if isinstance(inst0, dict) else {}
+    c = _t212_find_instrument_in_cache(t) or {}
+    o: dict = {**c, **up}
+    for k in ("currencyCode", "currency", "name", "isin", "type"):
+        v = o.get(k)
+        if (v is None or (isinstance(v, str) and not v.strip())) and c.get(k) not in (None, ""):
+            o[k] = c.get(k)
+    if t and not str(o.get("ticker") or "").strip():
+        o["ticker"] = t
+    return o
+
+
 def _t212_venue_code_from_ticker(ticker: str) -> str:
     t = (ticker or "").strip().upper()
     if t.endswith("_EQ") and t.count("_") >= 2:
@@ -1085,6 +1148,63 @@ def _t212_yahoo_isin_cache_set(key: str, row: dict | None) -> None:
         T212_ISIN_PICK[key] = (time.monotonic(), row)
 
 
+def _t212_isin_match_score(r: dict, ven: str) -> int:
+    """Heuristic score for a Yahoo search row given a venue hint (empty = unknown)."""
+    venu = (ven or "").upper()
+    symu = (str(r.get("symbol") or "")).upper()
+    qt = (str(r.get("quoteType") or "")).upper()
+    if qt and "CRYPT" in qt:
+        return -1000
+    sc = 0
+    if "EQU" in qt or "ETF" in qt or qt in ("EQUITY", "ETF") or "STOCK" in qt:
+        sc += 1
+    if venu in ("DE", "XETRA", "FRA", "DUS", "MUN", "STU", "ETR", "GETTEX"):
+        if symu.endswith((".DE", ".F", ".DUS", ".FRA", ".F")):
+            sc += 20
+    elif venu in ("GB", "LON", "LSE"):
+        if symu.endswith(".L"):
+            sc += 20
+    elif venu in ("FR", "EPA", "PA"):
+        if symu.endswith(".PA"):
+            sc += 20
+    elif venu in ("NL", "EAM", "AS", "AMS"):
+        if symu.endswith(".AS"):
+            sc += 20
+    elif venu in ("US", "NY", "NYS", "NAS"):
+        if not ("." in symu and not symu.endswith((".BIO", "WS"))):
+            if "." not in symu and symu and symu.isalnum() and 1 < len(symu) < 6:
+                sc += 8
+    elif venu in ("EU",) and (symu.endswith((".AS", ".DE", ".L", ".PA")) or "." not in symu):
+        sc += 2
+    else:
+        sc += 0
+    ccyv = (str(r.get("currency") or "")).upper()
+    if ccyv in (
+        "EUR",
+        "GBP",
+        "CHF",
+        "SEK",
+        "NOK",
+        "PLN",
+        "CZK",
+        "HUF",
+        "DKK",
+        "USD",
+        "INR",
+        "JPY",
+        "AUD",
+        "CAD",
+        "ZAR",
+        "AED",
+        "SAR",
+        "KRW",
+        "BRL",
+        "TWD",
+    ):
+        sc += 1
+    return sc
+
+
 def _t212_yahoo_isin_row(isin: str, venue: str) -> dict | None:
     q = re.sub(r"\s+", "", (isin or "")).upper()
     if not q or len(q) < 9:
@@ -1095,39 +1215,6 @@ def _t212_yahoo_isin_row(isin: str, venue: str) -> dict | None:
     if hit is not None:
         return hit
 
-    def score_row(r: dict) -> int:
-        symu = (str(r.get("symbol") or "")).upper()
-        qt = (str(r.get("quoteType") or "")).upper()
-        if qt and "CRYPT" in qt:
-            return -1000
-        sc = 0
-        if "EQU" in qt or "ETF" in qt or qt in ("EQUITY", "ETF") or "STOCK" in qt:
-            sc += 1
-        if ven in ("DE", "XETRA", "FRA", "DUS", "MUN", "STU", "ETR", "GETTEX"):
-            if symu.endswith((".DE", ".F", ".DUS", ".FRA", ".F")):
-                sc += 20
-        elif ven in ("GB", "LON", "LSE"):
-            if symu.endswith(".L"):
-                sc += 20
-        elif ven in ("FR", "EPA", "PA"):
-            if symu.endswith(".PA"):
-                sc += 20
-        elif ven in ("NL", "EAM", "AS", "AMS"):
-            if symu.endswith(".AS"):
-                sc += 20
-        elif ven in ("US", "NY", "NYS", "NAS"):
-            if not ("." in symu and not symu.endswith((".BIO", "WS"))):
-                if "." not in symu and symu and symu.isalnum() and 1 < len(symu) < 6:
-                    sc += 8
-        elif ven in ("EU",) and (symu.endswith((".AS", ".DE", ".L", ".PA")) or "." not in symu):
-            sc += 2
-        else:
-            sc += 0
-        ccyv = (str(r.get("currency") or "")).upper()
-        if ccyv in ("EUR", "GBP", "CHF", "SEK", "NOK", "PLN", "CZK", "HUF", "DKK", "USD"):
-            sc += 1
-        return sc
-
     try:
         items = yahoo_search(q, 8)
     except Exception:  # noqa: BLE001
@@ -1135,7 +1222,38 @@ def _t212_yahoo_isin_row(isin: str, venue: str) -> dict | None:
     cands = [x for x in (items or []) if isinstance(x, dict)]
     if not cands:
         return None
-    best = max(cands, key=score_row)
+    v_hints = (ven,) if ven else (
+        "US",
+        "GB",
+        "DE",
+        "EU",
+        "NL",
+        "FR",
+        "IT",
+        "ES",
+        "SE",
+        "CH",
+        "PL",
+        "AT",
+        "BE",
+        "IE",
+        "DK",
+        "NO",
+        "FI",
+        "IN",
+        "AU",
+        "CA",
+        "JP",
+        "HK",
+        "BR",
+    )
+
+    def best_score_for(r: dict) -> int:
+        if ven:
+            return _t212_isin_match_score(r, ven)
+        return max((_t212_isin_match_score(r, h) for h in v_hints), default=-9999)
+
+    best = max(cands, key=best_score_for)
     if not isinstance(best, dict):
         return None
     _t212_yahoo_isin_cache_set(ckey, best)
@@ -1148,11 +1266,13 @@ def _t212_build_position_row(
     is_crypto: bool,
     account_ccy: str,
     eur_per: dict[str, float] | None,
+    yh_by_key: dict[tuple[str, str], dict | None] | None = None,
 ) -> dict:
-    inst = {**_t212_find_instrument_in_cache(str((inst0 or {}).get("ticker") or "")), **(inst0 or {})}
+    tkr0 = str((inst0 or {}).get("ticker") or p.get("ticker") or "").strip()
+    inst = _t212_merged_instrument(tkr0, inst0)
     ticker = str((inst or {}).get("ticker") or p.get("ticker") or "").strip()
     name = str((inst or {}).get("name") or p.get("name") or "").strip()
-    raw_isin = str((inst or {}).get("isin") or "").strip()
+    raw_isin = str((inst or {}).get("isin") or (p or {}).get("isin") or "").strip()
     isin = re.sub(r"\s+", "", raw_isin).upper() or None
     qty = _t212_float(p.get("quantity"))
     avg0 = _t212_float(p.get("averagePricePaid") if p.get("averagePricePaid") is not None else p.get("averagePrice"))
@@ -1182,7 +1302,14 @@ def _t212_build_position_row(
     venue = _t212_venue_code_from_ticker(ticker)
     ccy_m = str((inst or {}).get("currencyCode") or (inst or {}).get("currency") or "").strip().upper()
     ccy_venue = _t212_listing_ccy_from_venue(venue)
-    yh: dict | None = _t212_yahoo_isin_row(isin, venue) if isin else None
+    yh: dict | None = None
+    if isin:
+        v_u = (venue or "").upper()
+        _kk = (isin, v_u)
+        if yh_by_key is not None:
+            yh = yh_by_key[_kk] if _kk in yh_by_key else _t212_yahoo_isin_row(isin, venue)
+        else:
+            yh = _t212_yahoo_isin_row(isin, venue)
     ysym = str((yh or {}).get("symbol") or "").strip()
 
     if yh and ysym:
@@ -3431,7 +3558,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "write_token_configured": write_tok,
                         "snapshot_on_disk": has_snap,
                     },
-                    "api_revision": 16,
+                    "api_revision": 17,
                 },
             )
 
@@ -3842,7 +3969,7 @@ def main() -> int:
         f"lsof -iTCP:{port} -sTCP:LISTEN  then kill that PID, and start this server again. GET /api/ai-commentary avoids POST.",
         flush=True,
     )
-    print("Health check: GET /api/health  →  expect api_revision: 16, llm_commentary, shared_family_portfolio.", flush=True)
+    print("Health check: GET /api/health  →  expect api_revision: 17, llm_commentary, shared_family_portfolio.", flush=True)
     t212_instruments_warmer_start(from_boot=True)
     try:
         httpd.serve_forever()
