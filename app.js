@@ -15,6 +15,69 @@ const K = {
 const SEARCH_LAST_Q = "jsa.search.lastQ";
 /** Which broker ledger is active in the Portfolio UI (`sessionStorage`). */
 const PF_ACTIVE_KEY = "jsa.pf.activeBroker";
+/** `sessionStorage` — per-ledger table sort for holdings (name, value, ccy, …). */
+const PF_HOLDING_SORT_KEY = "jsa.pf.holdingSortV1";
+/** Preferred currency order when sorting the CCY column (rest sort after this list). */
+const PF_CCY_SORT_ORDER = [
+  "USD",
+  "EUR",
+  "GBP",
+  "CHF",
+  "JPY",
+  "CNY",
+  "INR",
+  "AUD",
+  "CAD",
+  "SEK",
+  "NOK",
+  "DKK",
+  "PLN",
+  "CZK",
+  "HUF",
+  "ZAR",
+  "AED",
+  "SAR",
+  "KRW",
+  "BRL",
+  "TWD",
+  "HKD",
+  "SGD",
+  "MXN",
+  "TRY",
+  "ILS",
+  "THB",
+  "IDR",
+  "PHP",
+  "BHD",
+  "JOD",
+  "KWD",
+  "QAR",
+  "EGP",
+  "MAD",
+  "RON",
+  "BAM",
+  "BGN",
+  "HRK",
+  "ISK",
+  "GEL",
+  "PEN",
+  "CLP",
+  "COP",
+  "VND",
+  "BDT",
+  "PKR",
+  "LKR",
+  "MUR",
+  "NGN",
+  "GHS",
+  "KES",
+  "LBP",
+  "DZD",
+  "TND",
+  "BWP",
+  "NAD",
+  "RUB",
+];
 const PF_T212 = "t212";
 /** Crypto held in Trading 212 only (synced via read-only API). */
 const PF_CRYPTO = "t212_crypto";
@@ -4561,6 +4624,20 @@ function pfClearTableMountState() {
 function handlePfTableClick(ev) {
   const t = ev.target;
   if (!(t instanceof HTMLElement)) return;
+  const hdr = t.closest("button.pf-hdr-sort");
+  if (hdr instanceof HTMLButtonElement && hdr.dataset.pfHdrKey) {
+    if (t.closest("table.pfAltHoldingsTbl")) return;
+    const host = ev.currentTarget;
+    if (!(host instanceof HTMLElement) || host.id !== "tbl") return;
+    const b = getActiveBroker();
+    if (b === PF_INSURANCE || b === PF_FIXED_DEPOSIT) return;
+    const st0 = pfHoldingSortRead(b);
+    const k = String(hdr.dataset.pfHdrKey || "sym");
+    const next = st0.k === k ? { k, d: -st0.d } : { k, d: pfHoldingSortDefaultDir(k) };
+    pfHoldingSortWrite(b, next);
+    renderPf();
+    return;
+  }
   const rm = t.closest("[data-pf-rm]");
   if (rm instanceof HTMLElement && rm.dataset.pfRm) {
     const rid = rm.dataset.pfRm;
@@ -4806,6 +4883,104 @@ function renderPfFdTable(el) {
   void refreshPfCombinedEur();
 }
 
+function pfHoldingSortRead(brokerId) {
+  try {
+    const raw = sessionStorage.getItem(PF_HOLDING_SORT_KEY);
+    const o = raw ? JSON.parse(raw) : {};
+    if (o && typeof o === "object" && o[brokerId] && o[brokerId].k) {
+      const d = Number(o[brokerId].d);
+      return { k: String(o[brokerId].k), d: d === -1 ? -1 : 1 };
+    }
+  } catch {
+    /* ignore */
+  }
+  return { k: "sym", d: 1 };
+}
+
+function pfHoldingSortWrite(brokerId, st) {
+  try {
+    const raw = sessionStorage.getItem(PF_HOLDING_SORT_KEY);
+    const o = raw ? JSON.parse(raw) : {};
+    if (typeof o !== "object" || o === null) return;
+    o[brokerId] = st;
+    sessionStorage.setItem(PF_HOLDING_SORT_KEY, JSON.stringify(o));
+  } catch {
+    /* ignore */
+  }
+}
+
+function pfCcySortIndex(ccy) {
+  const n = normalizeCcyForFx(String(ccy || ""));
+  if (!n) return 10000;
+  const i = PF_CCY_SORT_ORDER.indexOf(n);
+  if (i >= 0) return i;
+  return 500 + n.charCodeAt(0) * 3 + (n.charCodeAt(1) || 0) % 40;
+}
+
+function pfHoldingSortDefaultDir(key) {
+  return key === "sym" || key === "nm" || key === "ex" || key === "ccy" ? 1 : -1;
+}
+
+/**
+ * @param {{ r: object, qty: number, avg: number, last: number, val: number, pl: number, wPct: number }} A
+ * @param {{ k: string, d: number }} sst
+ */
+function pfHoldingRowCompare(A, B, sst, multi) {
+  const k0 = sst.k;
+  const d = sst.d;
+  const k = multi && k0 === "w" ? "sym" : k0;
+  const an = (x) => String(x ?? "").toLowerCase();
+  let raw = 0;
+  switch (k) {
+    case "sym":
+      raw = an(A.r.sym).localeCompare(an(B.r.sym), undefined, { sensitivity: "base" });
+      break;
+    case "nm":
+      raw = an(A.r.nm || A.r.sym).localeCompare(an(B.r.nm || B.r.sym), undefined, { sensitivity: "base" });
+      break;
+    case "ex":
+      raw = an(A.r.ex).localeCompare(an(B.r.ex), undefined, { sensitivity: "base" });
+      break;
+    case "ccy":
+      raw = pfCcySortIndex(A.r.ccy) - pfCcySortIndex(B.r.ccy);
+      break;
+    case "qty":
+      raw = (A.qty - B.qty) || 0;
+      break;
+    case "last":
+      raw = (A.last - B.last) || 0;
+      break;
+    case "avg":
+      raw = (A.avg - B.avg) || 0;
+      break;
+    case "val":
+      raw = (A.val - B.val) || 0;
+      break;
+    case "w":
+      raw = (A.wPct - B.wPct) || 0;
+      break;
+    case "pl":
+      raw = (A.pl - B.pl) || 0;
+      break;
+    default:
+      raw = 0;
+  }
+  if (d < 0) raw = -raw;
+  if (raw !== 0) return raw;
+  return an(A.r.sym).localeCompare(an(B.r.sym), undefined, { sensitivity: "base" });
+}
+
+function pfHoldingTheadBtn(key, label, isNum, st, noSort) {
+  if (noSort) {
+    return `<th class="${isNum ? "pfNum" : ""} pfThPlain" scope="col">${esc(label)}</th>`;
+  }
+  const active = st.k === key;
+  const dir = st.d;
+  const caret = active ? (dir > 0 ? " \u25B2" : " \u25BC") : "";
+  const ariaS = active ? (dir > 0 ? ' aria-sort="ascending"' : ' aria-sort="descending"') : "";
+  return `<th class="${isNum ? "pfNum" : ""} pfThSort" scope="col"${ariaS}><button type="button" class="pf-hdr-sort${isNum ? " pf-hdr-sortNum" : ""}" data-pf-hdr-key="${key}" aria-label="Sort by ${esc(label)}"${active ? ' aria-pressed="true"' : ""}>${esc(label)}<span class="pfSortInd" aria-hidden="true">${caret}</span></button></th>`;
+}
+
 /* portfolio table (uses `loadPfBundle` + active broker) */
 function renderPf() {
   const el = $("tbl");
@@ -4825,11 +5000,10 @@ function renderPf() {
     return;
   }
   const rowsRaw = loadPfBundle().brokers[b].rows;
-  const rows = [...rowsRaw].sort((a, b) =>
-    String(a.sym || a.nm || "").localeCompare(String(b.sym || b.nm || ""), undefined, { sensitivity: "base" }),
-  );
+  const rows = [...rowsRaw];
   if (!rows.length) {
     el.innerHTML = `<p class="muted">No rows in this ledger yet.</p>`;
+    el.onclick = null;
     pfClearTableMountState();
     renderPfCharts([]);
     void refreshPfCombinedEur();
@@ -4845,7 +5019,7 @@ function renderPf() {
     const cost = qty * avg;
     const val = qty * last;
     const pl = val - cost;
-    return { r, qty, avg, last, cost, val, pl };
+    return { r, qty, avg, last, cost, val, pl, wPct: 0 };
   });
   let tVal = 0;
   let tPl = 0;
@@ -4855,12 +5029,18 @@ function renderPf() {
       tPl += o.pl;
     }
   }
+  for (const o of rowObjs) {
+    o.wPct = !multi && tVal > 0 ? (o.val / tVal) * 100 : 0;
+  }
+  const sst = pfHoldingSortRead(b);
+  rowObjs.sort((A, B) => pfHoldingRowCompare(A, B, sst, multi));
   const t212CsvHint =
     b === PF_T212 &&
     rows.some((r) => !r.t212Ticker && /_EQ$/i.test(String(r.sym || "").replace(/\s+/g, "")))
       ? `<div class="card2 mt" role="status"><p class="sml"><strong>CSV / manual rows:</strong> symbols and the <strong>CCY</strong> column match your import (often account USD). <strong>Sync from Trading 212</strong> replaces this ledger with live open positions: cleaned tickers, exchange, and listing currency — requires your server’s Trading 212 API keys on Render.</p></div>`
       : "";
-  const thWeight = !multi ? '<th class="pfNum">Weight</th>' : "";
+  const thSt = sst;
+  const thWeight = !multi ? pfHoldingTheadBtn("w", "Weight", true, thSt, false) : pfHoldingTheadBtn("w", "Weight", true, thSt, true);
   const body = rowObjs
     .map((o) => {
       const { r, qty, avg, last, val, pl } = o;
@@ -4893,10 +5073,14 @@ function renderPf() {
   const foot = !multi
     ? `<tr class="tot"><td colspan="${6 + nc}"><strong>Total</strong></td><td class="pfNum"><strong>${esc(fmtMoney(oneCcy, tVal))}</strong></td><td class="sml pfNum"><strong>100%</strong></td><td class="pfNum pfPlCol ${tPl >= 0 ? "plp" : "pln"}"><strong>${esc(fmtMoney(oneCcy, tPl))}</strong></td></tr>`
     : `<tr class="tot"><td colspan="${8 + nc}" class="muted">Multiple currencies in this table.</td></tr>`;
-  const thName = showName ? "<th>Name</th>" : "";
-  el.innerHTML = `${t212CsvHint}<div class="pfTableWrap" role="region" aria-label="Holdings table"><table class="pfHoldingsTbl"><thead><tr>
-    <th class="pfSymCol">Sym</th>${thName}<th class="pfExCol">Ex</th><th>Ccy</th><th class="pfNum">Qty</th><th class="pfNum">Avg</th><th class="pfNum">Last</th><th class="pfNum">Value</th>${thWeight}<th class="pfNum pfPlCol">P/L</th>
+  const thName = showName ? pfHoldingTheadBtn("nm", "Name", false, thSt, false) : "";
+  const colg = showName
+    ? `<colgroup><col class="pfCol pfColSym" /><col class="pfCol pfColNm" /><col class="pfCol pfColEx" /><col class="pfCol pfColCcy" /><col class="pfCol pfColQty" /><col class="pfCol pfColAvg" /><col class="pfCol pfColLast" /><col class="pfCol pfColVal" />${!multi ? `<col class="pfCol pfColWt" />` : ""}<col class="pfCol pfColPl" /></colgroup>`
+    : `<colgroup><col class="pfCol pfColSym" /><col class="pfCol pfColEx" /><col class="pfCol pfColCcy" /><col class="pfCol pfColQty" /><col class="pfCol pfColAvg" /><col class="pfCol pfColLast" /><col class="pfCol pfColVal" />${!multi ? `<col class="pfCol pfColWt" />` : ""}<col class="pfCol pfColPl" /></colgroup>`;
+  el.innerHTML = `${t212CsvHint}<div class="pfTableWrap" role="region" aria-label="Holdings table"><table class="pfHoldingsTbl">${colg}<thead><tr>
+    ${pfHoldingTheadBtn("sym", "Sym", false, thSt, false)}${thName}${pfHoldingTheadBtn("ex", "Ex", false, thSt, false)}${pfHoldingTheadBtn("ccy", "Ccy", false, thSt, false)}${pfHoldingTheadBtn("qty", "Qty", true, thSt, false)}${pfHoldingTheadBtn("avg", "Avg", true, thSt, false)}${pfHoldingTheadBtn("last", "Last", true, thSt, false)}${pfHoldingTheadBtn("val", "Value", true, thSt, false)}${thWeight}${pfHoldingTheadBtn("pl", "P/L", true, thSt, false)}
   </tr></thead><tbody>${body}${foot}</tbody></table></div>`;
+  el.onclick = (e) => handlePfTableClick(e);
   const t212Mount = $("pfT212EurMount");
   if (t212Mount) {
     if ((b === PF_T212 || b === PF_CRYPTO) && rows.length) {

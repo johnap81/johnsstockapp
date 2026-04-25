@@ -507,19 +507,26 @@ a.btn {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
   gap: 10px 12px;
-  align-items: start;
+  align-items: end;
 }
 @media (min-width: 560px) {
   .pfAddRowGrid {
     grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
   }
 }
+@media (min-width: 900px) {
+  .pfAddRowGrid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
 .pfAddRowGrid .pfAddField {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  justify-content: flex-end;
   min-width: 0;
   margin: 0;
+  min-height: 3.1rem;
   font-size: 11px;
   font-weight: 800;
   color: var(--m);
@@ -532,6 +539,7 @@ a.btn {
   font-weight: 600;
 }
 .pfAddRowGrid .pfAddField .in {
+  margin-top: auto;
   font-size: 13px;
   text-transform: none;
   font-weight: 600;
@@ -643,11 +651,13 @@ a.btn {
   min-width: 0;
   table-layout: fixed;
   font-size: 12px;
+  border-collapse: collapse;
 }
 .pfHoldingsTbl th,
 .pfHoldingsTbl td {
-  padding: 8px 5px;
+  padding: 8px 6px;
   vertical-align: middle;
+  border-bottom: 1px solid var(--bd);
 }
 .pfHoldingsTbl th.pfNum,
 .pfHoldingsTbl td.pfNum {
@@ -656,14 +666,82 @@ a.btn {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+.pfHoldingsTbl th.pfThSort,
+.pfHoldingsTbl th.pfThPlain {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--m);
+  font-weight: 800;
+  line-height: 1.2;
+  border-bottom: 1px solid var(--bd);
+}
+.pf-hdr-sort {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  min-height: 2.2em;
+}
+.pf-hdr-sort:hover {
+  color: var(--tx);
+}
+.pf-hdr-sortNum {
+  justify-content: flex-end;
+  text-align: right;
+}
+.pf-hdr-sort .pfSortInd {
+  font-size: 9px;
+  opacity: 0.9;
+  flex-shrink: 0;
+}
+.pfColSym {
+  width: 8%;
+}
+.pfColNm {
+  width: 16%;
+}
+.pfColEx {
+  width: 7%;
+}
+.pfColCcy {
+  width: 6%;
+}
+.pfColQty {
+  width: 9%;
+}
+.pfColAvg,
+.pfColLast {
+  width: 9%;
+}
+.pfColVal {
+  width: 10%;
+}
+.pfColWt {
+  width: 6%;
+}
+.pfColPl {
+  width: 9%;
+}
 .pfHoldingsTbl .pfPlCol {
-  padding-right: 14px;
+  padding-right: 10px;
 }
 .pfHoldingsTbl .pfSymCol {
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .pfHoldingsTbl .pfExCol {
-  max-width: 4.5rem;
+  max-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
