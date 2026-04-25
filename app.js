@@ -26,6 +26,9 @@ const PF_MF_COIN = "mf_coin";
 const PF_MF_KUVERA = "mf_kuvera";
 /** Display order for tabs, storage, and combined EUR rollup. */
 const PF_BROKER_IDS = [PF_T212, PF_CRYPTO, PF_ZERODHA, PF_ETORO, PF_MF_COIN, PF_MF_KUVERA, PF_INSURANCE, PF_FIXED_DEPOSIT];
+/** When set, Portfolio shows the server snapshot for the family read-only link — not this device’s `localStorage`. */
+let _pfSharedBundle = null;
+
 const PF_BROKER_LABEL = {
   [PF_T212]: "Trading 212",
   [PF_CRYPTO]: "Crypto (T212)",
@@ -455,6 +458,14 @@ function emptyPfBundle() {
 }
 
 function loadPfBundle() {
+  if (_pfSharedBundle != null) {
+    const x = JSON.parse(JSON.stringify(_pfSharedBundle));
+    if (x?.v === 2 && x.brokers && typeof x.brokers === "object") {
+      ensurePfBrokerShape(x.brokers);
+      migratePortfolioBundleShape(x);
+    }
+    return x;
+  }
   try {
     const raw = localStorage.getItem(K.pf);
     if (!raw) return emptyPfBundle();
@@ -480,10 +491,99 @@ function loadPfBundle() {
 }
 
 function savePfBundle(bundle) {
+  if (_pfSharedBundle != null) {
+    return;
+  }
   try {
     localStorage.setItem(K.pf, JSON.stringify(bundle));
   } catch {
     /* ignore */
+  }
+}
+
+/** @returns {Promise<{ ok: boolean, updated_at?: string }>} */
+async function fetchSharedFamilyPortfolio(readToken) {
+  _pfSharedBundle = null;
+  const t = String(readToken || "").trim();
+  if (!t) return { ok: false };
+  try {
+    const r = await fetch(`/api/shared/portfolio?token=${encodeURIComponent(t)}`, { cache: "no-store" });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok || !j.bundle || typeof j.bundle !== "object") {
+      return { ok: false };
+    }
+    const b = j.bundle;
+    if (b.v !== 2 || !b.brokers) return { ok: false };
+    _pfSharedBundle = JSON.parse(JSON.stringify(b));
+    return { ok: true, updated_at: typeof j.updated_at === "string" ? j.updated_at : undefined };
+  } catch {
+    _pfSharedBundle = null;
+    return { ok: false };
+  }
+}
+
+/** Family read-only mode: server snapshot + `view=family` in the hash. */
+async function applyPortfolioSharedFromHash(sp) {
+  const view = (sp.get("view") || "").trim().toLowerCase();
+  const tok = (sp.get("token") || "").trim();
+  const ban = $("pfSharedBanner");
+  const manage = $("pfManage");
+  if (view === "family" && tok) {
+    const { ok, updated_at: ua } = await fetchSharedFamilyPortfolio(tok);
+    if (ok) {
+      if (ban instanceof HTMLElement) {
+        ban.hidden = false;
+        const when = ua ? ` · snapshot ${esc(String(ua))}` : "";
+        ban.className = "card2 mt migrateBanner";
+        ban.innerHTML = `<p class="sml"><strong>Family view (read-only)</strong> — data from the server${when}. This is not your private browser copy. <a class="backLink" href="#/portfolio">Open normal portfolio</a> (this device only).</p>`;
+      }
+      if (manage instanceof HTMLElement) manage.hidden = true;
+      return;
+    }
+    if (ban instanceof HTMLElement) {
+      ban.hidden = false;
+      ban.className = "card2 mt globalApiBannerErr";
+      ban.innerHTML = `<p class="sml"><strong>Could not load family snapshot.</strong> The owner may not have published yet, or the read token in the URL does not match the server. Check <a href="/api/health" target="_blank" rel="noopener">/api/health</a> → <code>shared_family_portfolio</code>.</p>`;
+    }
+    if (manage instanceof HTMLElement) manage.hidden = false;
+    return;
+  }
+  _pfSharedBundle = null;
+  if (ban instanceof HTMLElement) {
+    ban.hidden = true;
+    ban.textContent = "";
+    ban.className = "card2 mt";
+  }
+  if (manage instanceof HTMLElement) manage.hidden = false;
+}
+
+async function publishPortfolioToServer() {
+  if (_pfSharedBundle != null) {
+    status("Open the normal portfolio (not the family link) to publish your data.");
+    return;
+  }
+  const k = window.prompt(
+    "Paste the publish key (must match SHARED_PORTFOLIO_WRITE_TOKEN in Render). It is not stored in this app.",
+  );
+  if (!k || !String(k).trim()) {
+    status("Publish cancelled");
+    return;
+  }
+  const bundle = loadPfBundle();
+  try {
+    const r = await fetch("/api/shared/portfolio", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Portfolio-Write-Key": String(k).trim() },
+      body: JSON.stringify(bundle),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      status(String(j.detail || j.error || `HTTP ${r.status}`));
+      return;
+    }
+    status(`Published for family view · ${j.updated_at || "ok"}`);
+  } catch (e) {
+    status(e instanceof Error ? e.message : String(e));
   }
 }
 
@@ -1326,6 +1426,7 @@ function portfolioHtml() {
   return `
     ${banner}
     <h1 class="h1">Portfolio</h1>
+    <div id="pfSharedBanner" class="card2 mt" hidden aria-live="polite"></div>
     <div class="pfTopSummary" aria-label="Total and breakdown in euro">
       <div id="pfGrandTotalMount" class="pfGrandTotalMount" aria-live="polite" hidden></div>
       <div id="pfCombinedEur" class="mt" hidden></div>
@@ -1366,6 +1467,7 @@ function portfolioHtml() {
       </div>
       <div class="rowgap mt pfToolRow" style="display:flex;flex-wrap:wrap;gap:10px;">
         <button type="button" class="btn" id="btnT212Sync" title="Replaces T212 + Crypto ledgers with open positions (read-only API)">Sync from Trading 212</button>
+        <button type="button" class="btn" id="btnPfPublish" title="Uploads this device’s portfolio to the server so family can open a read-only link (needs write key in Render)">Publish for family (server)</button>
         <button type="button" class="btn ghost" id="btnRef">Refresh prices</button>
         <button type="button" class="btn ghost" id="btnPfExport">Export CSV</button>
         <button type="button" class="btn ghost" id="btnPfJsonExport" title="All ledgers in one file — use to move data to phone or another browser">Backup all ledgers (JSON)</button>
@@ -1544,7 +1646,13 @@ function wire() {
       bundle.brokers[b].rows.push(...rows);
       savePfBundle(bundle);
       renderPf();
-      status(`Imported ${rows.length} → ${PF_BROKER_LABEL[b]}`);
+      if (b === PF_T212) {
+        status(
+          `Imported ${rows.length} → ${PF_BROKER_LABEL[b]} — CSV keeps broker tickers and currencies as in the file. For display symbols, exchange, and per-listing currency, click "Sync from Trading 212" (replaces T212 + Crypto ledgers with live API data).`,
+        );
+      } else {
+        status(`Imported ${rows.length} → ${PF_BROKER_LABEL[b]}`);
+      }
     });
     $("btnAdd")?.addEventListener("click", () => {
       const bundle = loadPfBundle();
@@ -1715,10 +1823,16 @@ function wire() {
       renderPf();
       status(`Cleared ${lab}`);
     });
+    $("btnPfPublish")?.addEventListener("click", () => {
+      void publishPortfolioToServer();
+    });
     bindPfPortfolioViewOnce();
     setActiveBroker(getActiveBroker());
-    renderPf();
-    status("Portfolio", document.documentElement.dataset.theme || "");
+    void (async () => {
+      await applyPortfolioSharedFromHash(sp);
+      renderPf();
+      status("Portfolio", document.documentElement.dataset.theme || "");
+    })();
     return;
   }
 
@@ -4684,6 +4798,11 @@ function renderPf() {
       tPl += o.pl;
     }
   }
+  const t212CsvHint =
+    b === PF_T212 &&
+    rows.some((r) => !r.t212Ticker && /_EQ$/i.test(String(r.sym || "").replace(/\s+/g, "")))
+      ? `<div class="card2 mt" role="status"><p class="sml"><strong>CSV / manual rows:</strong> symbols and the <strong>CCY</strong> column match your import (often account USD). <strong>Sync from Trading 212</strong> replaces this ledger with live open positions: cleaned tickers, exchange, and listing currency — requires your server’s Trading 212 API keys on Render.</p></div>`
+      : "";
   const thWeight = !multi ? '<th class="pfNum">Weight</th>' : "";
   const body = rowObjs
     .map((o) => {
@@ -4718,7 +4837,7 @@ function renderPf() {
     ? `<tr class="tot"><td colspan="${6 + nc}"><strong>Total</strong></td><td class="pfNum"><strong>${esc(fmtMoney(oneCcy, tVal))}</strong></td><td class="sml pfNum"><strong>100%</strong></td><td class="pfNum pfPlCol ${tPl >= 0 ? "plp" : "pln"}"><strong>${esc(fmtMoney(oneCcy, tPl))}</strong></td></tr>`
     : `<tr class="tot"><td colspan="${8 + nc}" class="muted">Multiple currencies in this table.</td></tr>`;
   const thName = showName ? "<th>Name</th>" : "";
-  el.innerHTML = `<div class="pfTableWrap" role="region" aria-label="Holdings table"><table class="pfHoldingsTbl"><thead><tr>
+  el.innerHTML = `${t212CsvHint}<div class="pfTableWrap" role="region" aria-label="Holdings table"><table class="pfHoldingsTbl"><thead><tr>
     <th class="pfSymCol">Sym</th>${thName}<th class="pfExCol">Ex</th><th>Ccy</th><th class="pfNum">Qty</th><th class="pfNum">Avg</th><th class="pfNum">Last</th><th class="pfNum">Value</th>${thWeight}<th class="pfNum pfPlCol">P/L</th>
   </tr></thead><tbody>${body}${foot}</tbody></table></div>`;
   const t212Mount = $("pfT212EurMount");

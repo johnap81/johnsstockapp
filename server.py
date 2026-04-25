@@ -2,7 +2,8 @@
 """
 John’sStockApp — minimal API server + static file host.
 Endpoints: GET /api/search, GET /api/quote, GET /api/history, GET /api/news, GET /api/corporate, GET /api/fx-eur,
-GET/POST /api/ai-commentary, GET /api/ai-ask, GET /api/t212/rows, GET /api/t212/instruments
+GET/POST /api/ai-commentary, GET /api/ai-ask, GET /api/t212/rows, GET /api/t212/instruments,
+PUT /api/shared/portfolio (owner publish), GET /api/shared/portfolio?token= (family read-only)
 """
 from __future__ import annotations
 
@@ -3293,6 +3294,14 @@ class Handler(SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
+    def do_PUT(self) -> None:  # noqa: N802
+        p = urlparse(self.path)
+        path = _norm_api_path(p.path).lower()
+        load_dotenv(os.path.join(APP_ROOT, ".env"))
+        if path == "/api/shared/portfolio":
+            return handle_put_shared_portfolio(self)
+        json_response(self, 404, {"error": "unknown put route", "detail": path})
+
     def do_POST(self) -> None:  # noqa: N802
         p = urlparse(self.path)
         path = _norm_api_path(p.path).lower()
@@ -3338,12 +3347,19 @@ class Handler(SimpleHTTPRequestHandler):
             qn = (qs.get("q", [""])[0] or "").strip() or (qs.get("question", [""])[0] or "").strip()
             return handle_ai_ask(self, qn)
 
+        if path == "/api/shared/portfolio":
+            return handle_get_shared_portfolio(self, parse_qs(p.query or ""))
+
         if path == "/api/health":
             td = bool(env("TWELVE_DATA_API_KEY"))
             eod = bool(env("EODHD_API_TOKEN") or env("EODHD_API_KEY"))
             ms = bool(env("MARKETSTACK_ACCESS_KEY") or env("MARKETSTACK_API_KEY"))
             av = bool(env("ALPHAVANTAGE_API_KEY"))
             t212 = bool(env("TRADING212_API_KEY") and env("TRADING212_API_SECRET"))
+            read_tok = bool((env("SHARED_PORTFOLIO_READ_TOKEN", "") or "").strip())
+            write_tok = bool((env("SHARED_PORTFOLIO_WRITE_TOKEN", "") or "").strip())
+            snap_path = _shared_portfolio_file_path()
+            has_snap = os.path.isfile(snap_path)
             t212_cache: dict = {}
             if t212:
                 with T212I_LOCK:
@@ -3408,7 +3424,14 @@ class Handler(SimpleHTTPRequestHandler):
                         "instruments": "GET /api/t212/instruments?q=…&region=eu|all&type=STOCK|ETF (cached; warms in background, ~1 call / 50s)",
                     },
                     "t212_instruments_cache": t212_cache,
-                    "api_revision": 15,
+                    "shared_family_portfolio": {
+                        "get": "GET /api/shared/portfolio?token=READ_TOKEN (v2 bundle for family read-only view)",
+                        "put": "PUT /api/shared/portfolio + header X-Portfolio-Write-Key: WRITE_TOKEN",
+                        "read_token_configured": read_tok,
+                        "write_token_configured": write_tok,
+                        "snapshot_on_disk": has_snap,
+                    },
+                    "api_revision": 16,
                 },
             )
 
@@ -3650,6 +3673,132 @@ class Handler(SimpleHTTPRequestHandler):
         )
 
 
+# --- Shared family portfolio (read-only link) — server snapshot; not the same as per-browser localStorage. ---
+_SHARED_PF_LOCK = threading.Lock()
+
+
+def _shared_portfolio_file_path() -> str:
+    p = (env("SHARED_PORTFOLIO_PATH", "") or "").strip()
+    if p:
+        return p
+    return os.path.join(APP_ROOT, "data", "shared_portfolio.json")
+
+
+def handle_get_shared_portfolio(handler: SimpleHTTPRequestHandler, qs: dict[str, list[str]]) -> None:
+    want = (env("SHARED_PORTFOLIO_READ_TOKEN", "") or "").strip()
+    if not want:
+        return json_response(
+            handler,
+            503,
+            {
+                "ok": False,
+                "error": "shared_view_not_configured",
+                "detail": "Set SHARED_PORTFOLIO_READ_TOKEN in .env on the server, then redeploy.",
+            },
+        )
+    got = (qs.get("token", [""])[0] or qs.get("read", [""])[0] or "").strip()
+    if not got or got != want:
+        return json_response(handler, 403, {"ok": False, "error": "forbidden"})
+    path = _shared_portfolio_file_path()
+    with _SHARED_PF_LOCK:
+        if not os.path.isfile(path):
+            return json_response(
+                handler,
+                404,
+                {
+                    "ok": False,
+                    "error": "not_published",
+                    "detail": "Owner has not published a snapshot yet (PUT /api/shared/portfolio with write key).",
+                },
+            )
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:  # noqa: BLE001
+            return json_response(
+                handler,
+                500,
+                {"ok": False, "error": "read_failed", "detail": redact_for_json_detail(str(e))[:400]},
+            )
+    if not isinstance(data, dict) or data.get("v") != 2 or not isinstance(data.get("brokers"), dict):
+        return json_response(
+            handler,
+            500,
+            {"ok": False, "error": "invalid_snapshot", "detail": "Stored JSON is not a v2 portfolio bundle."},
+        )
+    meta = data.get("_meta") if isinstance(data.get("_meta"), dict) else {}
+    out = {k: v for k, v in data.items() if k != "_meta"}
+    updated = str(meta.get("updated_at") or "")[:32]
+    return json_response(
+        handler,
+        200,
+        {"ok": True, "bundle": out, "updated_at": updated, "_note": "read-only; owner publishes via PUT /api/shared/portfolio"},
+    )
+
+
+def handle_put_shared_portfolio(handler: SimpleHTTPRequestHandler) -> None:
+    wkey = (env("SHARED_PORTFOLIO_WRITE_TOKEN", "") or "").strip()
+    if not wkey:
+        return json_response(
+            handler,
+            503,
+            {
+                "ok": False,
+                "error": "publish_not_configured",
+                "detail": "Set SHARED_PORTFOLIO_WRITE_TOKEN in .env; keep it secret. Redeploy.",
+            },
+        )
+    got = (handler.headers.get("X-Portfolio-Write-Key") or handler.headers.get("X-Write-Key") or "").strip()
+    if not got or got != wkey:
+        return json_response(handler, 403, {"ok": False, "error": "forbidden"})
+    try:
+        n = int(handler.headers.get("Content-Length") or "0")
+    except ValueError:
+        n = 0
+    raw = handler.rfile.read(n) if n > 0 else b""
+    try:
+        body = json.loads(raw.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return json_response(handler, 400, {"ok": False, "error": "invalid json"})
+    if not isinstance(body, dict) or body.get("v") != 2 or not isinstance(body.get("brokers"), dict):
+        return json_response(
+            handler,
+            400,
+            {
+                "ok": False,
+                "error": "expected_v2_portfolio",
+                "detail": "Body must be { v: 2, brokers: { ... } } matching the app backup shape.",
+            },
+        )
+    body = dict(body)
+    body.pop("_meta", None)
+    body["_meta"] = {
+        "updated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "source": "PUT /api/shared/portfolio",
+    }
+    path = _shared_portfolio_file_path()
+    ddir = os.path.dirname(path)
+    try:
+        os.makedirs(ddir, exist_ok=True)
+    except OSError as e:
+        return json_response(
+            handler,
+            500,
+            {"ok": False, "error": "mkdir_failed", "detail": str(e)[:200]},
+        )
+    tmp = path + ".tmp"
+    payload = json.dumps(body, ensure_ascii=False, indent=0).encode("utf-8")
+    with _SHARED_PF_LOCK:
+        with open(tmp, "wb") as f:
+            f.write(payload)
+        os.replace(tmp, path)
+    return json_response(
+        handler,
+        200,
+        {"ok": True, "bytes": len(payload), "path_hint": ddir, "updated_at": body["_meta"]["updated_at"]},
+    )
+
+
 def main() -> int:
     # Default 8844 avoids collision with Vite (often 5173/5174) when both are used locally.
     port = int(env("PORT", "8844") or "8844")
@@ -3693,7 +3842,7 @@ def main() -> int:
         f"lsof -iTCP:{port} -sTCP:LISTEN  then kill that PID, and start this server again. GET /api/ai-commentary avoids POST.",
         flush=True,
     )
-    print("Health check: GET /api/health  →  expect api_revision: 15 and llm_commentary.", flush=True)
+    print("Health check: GET /api/health  →  expect api_revision: 16, llm_commentary, shared_family_portfolio.", flush=True)
     t212_instruments_warmer_start(from_boot=True)
     try:
         httpd.serve_forever()
