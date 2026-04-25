@@ -644,20 +644,26 @@ a.btn {
 .pfSectorTblWrap {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
-  border-radius: 10px;
-  border: 1px solid var(--bd);
-  background: color-mix(in srgb, var(--bg) 25%, var(--card));
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--a2) 24%, var(--bd));
+  background: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--a2) 7%, var(--card)),
+    color-mix(in srgb, var(--a4) 5%, var(--card)) 100%
+  );
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--a2) 7%, transparent);
 }
 .pfSectorTbl {
   width: 100%;
   min-width: 280px;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 13px;
 }
 .pfSectorTbl th,
 .pfSectorTbl td {
   padding: 8px 10px;
-  border-bottom: 1px solid var(--bd);
+  border-bottom: 1px solid color-mix(in srgb, var(--a2) 12%, var(--bd));
   text-align: left;
   vertical-align: middle;
 }
@@ -665,8 +671,19 @@ a.btn {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: var(--m);
   font-weight: 800;
+  color: var(--tx);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--a2) 14%, transparent),
+    color-mix(in srgb, var(--a4) 10%, transparent)
+  );
+}
+.pfSectorTbl tbody tr:nth-child(odd) td {
+  background: color-mix(in srgb, var(--a2) 4%, var(--card));
+}
+.pfSectorTbl tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--a4) 5%, var(--card));
 }
 .pfSectorTbl th.pfNum,
 .pfSectorTbl td.pfNum {
@@ -677,6 +694,20 @@ a.btn {
 .pfSectorTbl tbody tr:last-child td {
   border-bottom: none;
 }
+[data-theme="light"] .pfSectorTblWrap {
+  background: linear-gradient(165deg, #f5f3ff, #ecfeff);
+  border-color: #ddd6fe;
+}
+[data-theme="light"] .pfSectorTbl th {
+  background: linear-gradient(90deg, #e9d5ff, #ccfbf1);
+  color: #4c1d95;
+}
+[data-theme="light"] .pfSectorTbl tbody tr:nth-child(odd) td {
+  background: color-mix(in srgb, #ede9fe 50%, #fff);
+}
+[data-theme="light"] .pfSectorTbl tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, #ccfbf1 35%, #fff);
+}
 .pfCharts .pfBrainCard {
   margin-top: 20px;
 }
@@ -686,23 +717,40 @@ a.btn {
   margin-top: 16px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
-  border-radius: var(--r);
-  border: 1px solid var(--bd);
-  background: var(--card);
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--a2) 28%, var(--bd));
   max-width: 100%;
+  background: linear-gradient(
+    175deg,
+    color-mix(in srgb, var(--a2) 9%, var(--card)) 0%,
+    color-mix(in srgb, var(--a4) 6%, var(--card)) 42%,
+    color-mix(in srgb, var(--a) 7%, var(--card)) 100%
+  );
+  box-shadow: 0 6px 28px color-mix(in srgb, var(--a2) 9%, rgba(0, 0, 0, 0.06));
 }
 .pfHoldingsTbl {
   width: 100%;
   min-width: 0;
   table-layout: fixed;
   font-size: 12px;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
 }
 .pfHoldingsTbl th,
 .pfHoldingsTbl td {
   padding: 8px 6px;
   vertical-align: middle;
-  border-bottom: 1px solid var(--bd);
+  border-bottom: 1px solid color-mix(in srgb, var(--a2) 14%, var(--bd));
+}
+.pfHoldingsTbl thead th {
+  background: linear-gradient(
+    95deg,
+    color-mix(in srgb, var(--a2) 22%, transparent) 0%,
+    color-mix(in srgb, var(--a) 12%, transparent) 45%,
+    color-mix(in srgb, var(--a4) 16%, transparent) 100%
+  );
+  color: var(--tx);
+  border-bottom: 1px solid color-mix(in srgb, var(--a2) 32%, var(--bd));
 }
 .pfHoldingsTbl th.pfNum,
 .pfHoldingsTbl td.pfNum {
@@ -719,7 +767,16 @@ a.btn {
   color: var(--m);
   font-weight: 800;
   line-height: 1.2;
-  border-bottom: 1px solid var(--bd);
+  border-bottom: 1px solid color-mix(in srgb, var(--a2) 28%, var(--bd));
+}
+.pfHoldingsTbl tbody tr:nth-child(odd) td {
+  background: color-mix(in srgb, var(--a2) 5%, var(--card));
+}
+.pfHoldingsTbl tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--a4) 6%, var(--card));
+}
+.pfHoldingsTbl tbody tr:hover td {
+  background: color-mix(in srgb, var(--a3) 8%, var(--card));
 }
 .pf-hdr-sort {
   display: flex;
@@ -739,6 +796,7 @@ a.btn {
 }
 .pf-hdr-sort:hover {
   color: var(--tx);
+  filter: brightness(1.06);
 }
 .pf-hdr-sortNum {
   justify-content: flex-end;
@@ -796,6 +854,53 @@ a.btn {
   border-bottom: none;
   padding-top: 12px;
   padding-bottom: 12px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--a) 11%, var(--card)),
+    color-mix(in srgb, var(--a2) 12%, var(--card))
+  ) !important;
+  border-top: 2px solid color-mix(in srgb, var(--a) 32%, var(--bd));
+  box-shadow: 0 -1px 0 color-mix(in srgb, var(--tx) 4%, transparent);
+}
+[data-theme="light"] .pfTableWrap {
+  background: linear-gradient(175deg, #f0f4ff 0%, #ecfeff 48%, #faf5ff 100%);
+  border-color: color-mix(in srgb, #a78bfa 35%, #c4b5fd 65%);
+  box-shadow: 0 8px 32px color-mix(in srgb, #7c3aed 12%, rgba(15, 23, 42, 0.08));
+}
+[data-theme="light"] .pfHoldingsTbl thead th {
+  background: linear-gradient(95deg, #e9d5ff 0%, #ccfbf1 50%, #ddd6fe 100%);
+  color: #1e1b4b;
+  border-bottom-color: #c4b5fd;
+}
+[data-theme="light"] .pfHoldingsTbl th.pfThSort,
+[data-theme="light"] .pfHoldingsTbl th.pfThPlain {
+  color: #4c1d95;
+  border-bottom-color: #c4b5fd;
+}
+[data-theme="light"] .pfHoldingsTbl th,
+[data-theme="light"] .pfHoldingsTbl td {
+  border-bottom-color: color-mix(in srgb, #a78bfa 22%, #e2e8f0);
+}
+[data-theme="light"] .pfHoldingsTbl tbody tr:nth-child(odd) td {
+  background: color-mix(in srgb, #ede9fe 55%, #fff);
+}
+[data-theme="light"] .pfHoldingsTbl tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, #ccfbf1 40%, #fff);
+}
+[data-theme="light"] .pfHoldingsTbl tbody tr:hover td {
+  background: color-mix(in srgb, #f9a8d4 18%, #fff);
+}
+[data-theme="light"] .pfHoldingsTbl tr.tot td {
+  background: linear-gradient(90deg, #cffafe, #e9d5ff) !important;
+  color: #0f172a;
+  border-top-color: #0d9488;
+}
+[data-theme="light"] .pf-hdr-sort,
+[data-theme="light"] .pf-hdr-sortNum {
+  color: #4c1d95;
+}
+[data-theme="light"] .pf-hdr-sort:hover {
+  color: #0f172a;
 }
 .pfPieGrid {
   display: grid;
