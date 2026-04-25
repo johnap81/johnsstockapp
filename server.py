@@ -355,7 +355,13 @@ def handle_t212_rows(handler: SimpleHTTPRequestHandler) -> None:
         uniq.add((isin, (venue or "").upper()))
     yh_by_key: dict[tuple[str, str], dict | None] = {}
     if uniq:
-        n_workers = min(10, max(1, len(uniq)))
+        # Keep concurrency low: each worker pulls Yahoo + holds JSON; Render free/starter RAM is tight.
+        try:
+            mx = int((env("T212_YAHOO_ISIN_MAX_WORKERS", "3") or "3").strip())
+        except ValueError:
+            mx = 3
+        mx = max(1, min(mx, 6))
+        n_workers = min(mx, max(1, len(uniq)))
         with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as ex:
             fut_map: dict[object, tuple[str, str]] = {}
             for isi, vu in uniq:
@@ -544,10 +550,21 @@ def t212_instruments_warmer_start(*, from_boot: bool = False) -> None:
                         items = [x for x in it if isinstance(x, dict)]
                 elif isinstance(data, list):
                     items = [x for x in data if isinstance(x, dict)]
+                try:
+                    cap = int((env("T212_INSTRUMENTS_MAX_ITEMS", "6000") or "6000").strip())
+                except ValueError:
+                    cap = 6000
+                cap = max(500, min(cap, 50_000))
                 with T212I_LOCK:
                     T212I_ITEMS.extend(items)
+                    if len(T212I_ITEMS) > cap:
+                        del T212I_ITEMS[cap:]
                     T212I_STATUS["pages"] = int(T212I_STATUS.get("pages") or 0) + 1
                     T212I_STATUS["total_rows"] = len(T212I_ITEMS)
+                if len(T212I_ITEMS) >= cap:
+                    with T212I_LOCK:
+                        T212I_STATUS["complete"] = True
+                    break
                 if nxt in (None, ""):
                     with T212I_LOCK:
                         T212I_STATUS["complete"] = True
@@ -939,6 +956,7 @@ def yahoo_search(q: str, limit: int) -> list[dict]:
 # --- Trading 212: account currency, ISIN → Yahoo, venue → row ccy (API row prices are in account ccy) ---
 T212Y2_LOCK = threading.Lock()
 T212_ISIN_PICK: dict[str, tuple[float, dict | None]] = {}
+T212_ISIN_PICK_MAX = 500
 
 
 def _t212_account_ccy_for_positions(auth: str) -> str:
@@ -1146,6 +1164,9 @@ def _t212_yahoo_isin_cache_get(key: str) -> dict | None:
 def _t212_yahoo_isin_cache_set(key: str, row: dict | None) -> None:
     with T212Y2_LOCK:
         T212_ISIN_PICK[key] = (time.monotonic(), row)
+        while len(T212_ISIN_PICK) > T212_ISIN_PICK_MAX:
+            oldest_k = min(T212_ISIN_PICK.items(), key=lambda kv: kv[1][0])[0]
+            T212_ISIN_PICK.pop(oldest_k, None)
 
 
 def _t212_isin_match_score(r: dict, ven: str) -> int:
@@ -3558,7 +3579,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "write_token_configured": write_tok,
                         "snapshot_on_disk": has_snap,
                     },
-                    "api_revision": 17,
+                    "api_revision": 18,
                 },
             )
 
@@ -3969,7 +3990,7 @@ def main() -> int:
         f"lsof -iTCP:{port} -sTCP:LISTEN  then kill that PID, and start this server again. GET /api/ai-commentary avoids POST.",
         flush=True,
     )
-    print("Health check: GET /api/health  →  expect api_revision: 17, llm_commentary, shared_family_portfolio.", flush=True)
+    print("Health check: GET /api/health  →  expect api_revision: 18, llm_commentary, shared_family_portfolio.", flush=True)
     t212_instruments_warmer_start(from_boot=True)
     try:
         httpd.serve_forever()

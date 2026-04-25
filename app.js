@@ -4985,6 +4985,23 @@ function pfHoldingTheadBtn(key, label, isNum, st, noSort) {
   return `<th class="${isNum ? "pfNum" : ""} pfThSort" scope="col"${ariaS}><button type="button" class="pf-hdr-sort${isNum ? " pf-hdr-sortNum" : ""}" data-pf-hdr-key="${key}" aria-label="Sort by ${esc(label)}"${active ? ' aria-pressed="true"' : ""}>${esc(label)}<span class="pfSortInd" aria-hidden="true">${caret}</span></button></th>`;
 }
 
+/** Extra copy when a ledger has no rows (private window vs family link). */
+function portfolioLedgerEmptyHintHtml() {
+  let isFamilyUrl = false;
+  try {
+    const { sp } = parseLocationHash();
+    const v = (sp.get("view") || "").trim().toLowerCase();
+    const tok = (sp.get("token") || "").trim();
+    isFamilyUrl = v === "family" && Boolean(tok);
+  } catch {
+    /* ignore */
+  }
+  if (isFamilyUrl) {
+    return `<p class="sml muted pfEmptyLedgerHint mt">If you expected holdings here, confirm you’re using the <strong>exact</strong> family link (with <code>view=family</code> and <code>token=…</code>) and that the owner has published. A normal <code>#/portfolio</code> link has no data in a private / new browser.</p>`;
+  }
+  return `<div class="card2 mt pfEmptyLedgerHint" role="note"><p class="sml" style="margin:0;line-height:1.55;max-width:42rem">Your portfolio in this app is stored in <strong>this browser only</strong> (not on the server). A <strong>private / incognito</strong> window, or another device, starts with an <strong>empty</strong> ledger — that is why you see no totals or rows.</p><p class="sml muted mt" style="margin:0 0 0 0;line-height:1.55;max-width:42rem">For <strong>family</strong> (read-only) access to data the owner published, open the <strong>full</strong> URL they sent, which must include <code>view=family</code> and <code>token=…</code> in the address bar (not only <code>#/portfolio</code>).</p></div>`;
+}
+
 /* portfolio table (uses `loadPfBundle` + active broker) */
 function renderPf() {
   const el = $("tbl");
@@ -5008,7 +5025,7 @@ function renderPf() {
   const rowsRaw = loadPfBundle().brokers[b].rows;
   const rows = [...rowsRaw];
   if (!rows.length) {
-    el.innerHTML = `<p class="muted">No rows in this ledger yet.</p>`;
+    el.innerHTML = `<p class="muted">No rows in this ledger yet.</p>${portfolioLedgerEmptyHintHtml()}`;
     el.onclick = null;
     pfClearTableMountState();
     renderPfCharts([]);
