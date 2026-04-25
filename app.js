@@ -204,6 +204,18 @@ function migratePortfolioBundleShape(bundle) {
       }
     }
   }
+  for (const brId of PF_BROKER_IDS) {
+    const rws = bundle.brokers[brId]?.rows;
+    if (!Array.isArray(rws)) continue;
+    for (const r of rws) {
+      if (!r || typeof r !== "object" || r.ccy == null) continue;
+      const t = String(r.ccy).trim();
+      if (t === "€" || t === "\u20ac" || t.toUpperCase() === "EURO") {
+        r.ccy = "EUR";
+        changed = true;
+      }
+    }
+  }
   return changed;
 }
 
@@ -242,6 +254,8 @@ let _histChartMeta = { source: "", range: "" };
 let _histChartStale = false;
 /** @type {"area" | "candle" | "heikin"} */
 let _histChartType = "area";
+/** Deduplicate concurrent `loadHistoryChart` calls (Technicals + expand chart). */
+let _histLoadPromise = /** @type {Promise<void> | null} */ (null);
 
 function histSnapStorageKey(sym, ex, rng) {
   return `${K.histSnap}:${String(sym || "").trim().toUpperCase()}|${String(ex || "").trim().toUpperCase()}|${String(rng || "1y").toLowerCase()}`;
@@ -800,7 +814,7 @@ function paintInstrPfHold(sym, ex) {
     </div>`;
     })
     .join("");
-  el.innerHTML = `<div class="instrPfHoldInner">${blocks}<p class="sml muted mt">Live quote and chart below. Update <strong>Last</strong> from <a class="backLink" href="#/portfolio">Portfolio</a> → <strong>Refresh prices</strong> on the ledger tab that holds this row.</p></div>`;
+  el.innerHTML = `<div class="instrPfHoldInner">${blocks}<p class="sml muted mt">Live quote below; expand <strong>Price history</strong> for the chart. Update <strong>Last</strong> from <a class="backLink" href="#/portfolio">Portfolio</a> → <strong>Refresh prices</strong> on the ledger tab that holds this row.</p></div>`;
   void enrichInstrPfHoldEur(sym, ex);
 }
 
@@ -880,9 +894,46 @@ function fmtN(n, d = 2) {
   }).format(n);
 }
 
+/**
+ * Map non-ISO codes from imports/APIs to ISO (ECB/Frankfurter `eur_per_unit` keys are ISO only).
+ * Example: T212 / manual rows sometimes use "EURO" or "€" — treat as "EUR" for rates and display.
+ */
+function normalizeCcyForFx(ccy) {
+  const t = String(ccy ?? "")
+    .trim();
+  if (t === "€" || t === "\u20ac") return "EUR";
+  const u = t.toUpperCase();
+  if (u === "EURO") return "EUR";
+  return u;
+}
+
+/**
+ * `eur_per_unit[CCY]` = EUR value of 1 unit of `CCY` (Frankfurter, ECB; server usually injects `EUR: 1`).
+ * @returns a positive rate, or `undefined` if the table has no valid rate.
+ */
+function eurPerUnitToEur(eurPer, ccyRaw) {
+  const c = normalizeCcyForFx(String(ccyRaw || ""));
+  if (!c) return undefined;
+  if (c === "EUR") {
+    const e = eurPer?.EUR;
+    if (typeof e === "number" && Number.isFinite(e) && e > 0) return e;
+    return 1;
+  }
+  const v = eurPer?.[c];
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+  return undefined;
+}
+
+/** Ccy column label: euro zone → symbol, else ISO. */
+function formatCcyLabel(ccy) {
+  const c = normalizeCcyForFx(ccy);
+  if (c === "EUR") return "€";
+  return c || "—";
+}
+
 /** Format a number with a simple currency prefix/suffix (no FX conversion). */
 function fmtMoney(ccy, n) {
-  const c = String(ccy || "").toUpperCase();
+  const c = normalizeCcyForFx(ccy);
   const sym = { USD: "$", EUR: "€", GBP: "£", INR: "₹", CHF: "CHF " }[c];
   const pfx = sym ?? (c ? `${c} ` : "");
   return pfx + fmtN(n);
@@ -1081,38 +1132,9 @@ function paintGlobalApiBanner(el, j, fetchOk) {
     typeof cfg === "object" &&
     Boolean(cfg.openai || cfg.anthropic || cfg.google || cfg.xai);
   if (!anyKey) {
-    try {
-      if (sessionStorage.getItem(K.llmBannerDismiss) === "1") {
-        el.hidden = true;
-        el.textContent = "";
-        el.className = "globalApiBanner";
-        return;
-      }
-    } catch {
-      /* ignore */
-    }
-    el.hidden = false;
-    el.className = "globalApiBanner globalApiBannerInfo";
-    const llmHostHint = isHostedWebApp()
-      ? " Add a provider key in <strong>your host’s environment</strong> (e.g. Render → <em>Environment</em>), same variable names as <code>.env.example</code> on your Mac — not the chat here."
-      : " Add a provider key to <code>.env</code> on the Mac and restart the app. I never need your key in chat.";
-    el.innerHTML = `<div class="globalApiBannerRow">
-      <div class="globalApiBannerBody">
-        <strong>No AI keys on the server yet.</strong>
-        <span class="sml"> This yellow strip is only a reminder — search, quotes, and portfolio still work. For <strong>Fundamentals → Generate commentary</strong> and <strong>Ask AI</strong>,${llmHostHint}</span>
-      </div>
-      <button type="button" class="btn ghost smlBtn globalApiDismiss" aria-label="Hide this reminder for this session">Dismiss</button>
-    </div>`;
-    el.querySelector(".globalApiDismiss")?.addEventListener("click", () => {
-      try {
-        sessionStorage.setItem(K.llmBannerDismiss, "1");
-      } catch {
-        /* ignore */
-      }
-      el.hidden = true;
-      el.textContent = "";
-      el.className = "globalApiBanner";
-    });
+    el.hidden = true;
+    el.textContent = "";
+    el.className = "globalApiBanner";
     return;
   }
   el.hidden = true;
@@ -1198,9 +1220,10 @@ function instrumentHtml(sym, ex, nm, ccyHint) {
       <button type="button" class="tabBtn" role="tab" aria-selected="false" aria-controls="tabInstrFun" id="tabBtnFun" data-tab="fun">Fundamentals</button>
     </div>
     </div>
-    <div class="instrChartDock card2 mt" id="instrChartDock">
-      <div class="h3">Price history</div>
-      <p class="muted sml" id="chartSt">Loading chart…</p>
+    <details class="instrChartDetails card2 mt" id="instrChartDetails">
+    <summary class="instrChartDetailsSum" id="instrChartDetailsSum">Price history <span class="muted sml">— click to show chart, overlays, and volume</span></summary>
+    <div class="instrChartDock" id="instrChartDock">
+      <p class="muted sml" id="chartSt">Expand this section to load the chart, or open the <strong>Technicals</strong> tab for indicators.</p>
       <p class="chartStaleBanner" id="chartStaleBanner" hidden role="status" aria-live="polite"></p>
       <div class="chartTypeBar" role="toolbar" aria-label="Chart type">
         <span class="muted sml">Type</span>
@@ -1223,6 +1246,7 @@ function instrumentHtml(sym, ex, nm, ccyHint) {
       </div>
       <p class="sml muted">Data from <code>/api/history</code> (India: Yahoo → EODHD → Alpha Vantage → Twelve; others: Yahoo → EODHD → Twelve → Alpha Vantage). If live data fails, a <strong>session snapshot</strong> may be shown. For information only.</p>
     </div>
+    </details>
     <section id="tabInstrOv" class="tabPanel" role="tabpanel" aria-labelledby="tabBtnOv">
       <div id="instrPfHold" class="card2 instrPfHold mt" hidden role="region" aria-label="Your portfolio holding"></div>
       <div id="instrQuoteMount" class="mt"><p class="muted">Loading quote…</p></div>
@@ -1258,7 +1282,7 @@ function instrumentHtml(sym, ex, nm, ccyHint) {
       </div>
     </section>
     <section id="tabInstrTech" class="tabPanel" role="tabpanel" aria-labelledby="tabBtnTech" hidden>
-      <p class="sml muted">Chart controls stay in <strong>Price history</strong> above while you read indicators here.</p>
+      <p class="sml muted">Indicators use the same daily series as the chart. Expand <strong>Price history</strong> (above) when you want the chart on screen; the series loads when you open that section or this tab.</p>
       <div id="techMount" class="techMount mt" aria-live="polite"></div>
     </section>
     <section id="tabInstrFun" class="tabPanel" role="tabpanel" aria-labelledby="tabBtnFun" hidden>
@@ -1295,8 +1319,6 @@ function portfolioHtml() {
       <div id="pfGrandTotalMount" class="pfGrandTotalMount" aria-live="polite" hidden></div>
       <div id="pfCombinedEur" class="mt" hidden></div>
     </div>
-    <p class="lead">Use the <strong>tabs</strong> for each account (T212, Crypto, Zerodha, …) and the <strong>import / add</strong> section at the bottom. <strong>Combined</strong> figures (above) use the same rows as the tables, converted to <strong>€</strong> (ECB reference) so you can compare <em>size</em> of each part of the portfolio. Row values in tables stay in the row’s <strong>local</strong> currency (USD, EUR, …) unless stated.</p>
-    <p class="sml muted pfDeviceNote">Holdings are saved <strong>in this browser only</strong>, keyed to the exact site address (<code>localhost</code>, a Wi‑Fi IP, or a future hosted URL are all separate). To copy data to another device, use <strong>Backup all ledgers (JSON)</strong> where the data exists, then <strong>Restore backup</strong> on the phone or new browser.</p>
     <div class="brokerBar brokerBarWide" role="tablist" aria-label="Portfolio ledgers">
       <button type="button" class="brokerTab brokerTabMain" role="tab" data-main-tab="t212" aria-selected="true">Trading 212</button>
       <button type="button" class="brokerTab brokerTabMain" role="tab" data-main-tab="crypto" aria-selected="false">Crypto</button>
@@ -1314,7 +1336,6 @@ function portfolioHtml() {
     <div id="tbl" class="mt"></div>
     <section id="pfManage" class="pfManageSection card2 mt" aria-labelledby="pfManageHd">
       <h2 class="h2" id="pfManageHd">Import &amp; manual rows</h2>
-      <p class="sml muted">CSV import and “Add row” apply to the <strong>selected ledger tab</strong> (and the <strong>insurance provider</strong> sub-tab when Insurances is selected). <strong>Trading 212 / Crypto (T212):</strong> use <strong>Sync from Trading 212</strong> for live positions (needs API keys in server <code>.env</code>), or import CSV. Stock-style ledgers: Zerodha <strong>XLSX</strong> → Save As CSV. Insurance/FD: use <strong>Download CSV template</strong> for column names. Semicolons are auto-detected.</p>
       <div class="grid2 mt">
         <div>
           <label class="lbl">CSV import</label>
@@ -1343,7 +1364,6 @@ function portfolioHtml() {
       </div>
       <div class="card2 mt pfSafetyCard" style="margin-top:14px;">
         <div class="h3">Safety PIN</div>
-        <p class="sml muted">Clearing the <strong>whole portfolio</strong> for a ledger or the <strong>watchlist</strong> (and removing a watchlist row) requires your 3-digit PIN. Until you change it here, the PIN is <strong>000</strong>.</p>
         <div class="rowgap" style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;">
           <label class="lbl" style="margin:0">New PIN (3 digits)
             <input class="in" id="pfPinNew" maxlength="3" inputmode="numeric" placeholder="e.g. 842" autocomplete="off" />
@@ -1520,7 +1540,7 @@ function wire() {
       const b = getActiveBroker();
       if (b === PF_INSURANCE) {
         const pn = val("fPolName");
-        const ccy = val("fPolCcy").toUpperCase();
+        const ccy = normalizeCcyForFx(val("fPolCcy").toUpperCase());
         if (!pn || !ccy) {
           status("Need policy name and currency");
           return;
@@ -1546,7 +1566,7 @@ function wire() {
       if (b === PF_FIXED_DEPOSIT) {
         const bank = val("fFdBank");
         const name = val("fFdName");
-        const ccy = val("fFdCcy").toUpperCase();
+        const ccy = normalizeCcyForFx(val("fFdCcy").toUpperCase());
         const pr = num(val("fFdPrin"));
         if (!bank || !name || !ccy || pr <= 0) {
           status("Need bank, deposit name, currency, and principal > 0");
@@ -1573,7 +1593,7 @@ function wire() {
       }
       const sym = val("fSym");
       const ex = val("fEx");
-      const ccy = val("fCcy").toUpperCase() || (b === PF_CRYPTO ? "USD" : "");
+      const ccy = normalizeCcyForFx(val("fCcy").toUpperCase() || (b === PF_CRYPTO ? "USD" : ""));
       const qty = num(val("fQty"));
       if (!sym || !ccy || qty <= 0) {
         status("Need symbol, currency, qty");
@@ -1958,11 +1978,20 @@ function setInstrumentTab(which) {
     panel.hidden = !on;
     btn.setAttribute("aria-selected", on ? "true" : "false");
   }
+  if (which === "tech" && _instrQuoteCtx?.sym) {
+    void ensureHistoryChartLoaded(_instrQuoteCtx.sym, _instrQuoteCtx.ex);
+  }
 }
 
 function wireInstrument(sym, ex, nm, ccyHint, fromPf) {
   _instrQuoteCtx = { sym, ex, nm: nm || "", ccyHint: ccyHint || "", q: null };
   setInstrHistoryContext([], null);
+  _histChartBars = null;
+  _histLoadPromise = null;
+  const st0 = $("chartSt");
+  if (st0) st0.textContent = "Expand Price history (above) or open the Technicals tab to load the chart and indicators.";
+  const chartD0 = $("instrChartDetails");
+  if (chartD0 instanceof HTMLDetailsElement) chartD0.open = false;
   const holdMount = $("instrPfHold");
   if (holdMount instanceof HTMLElement) {
     if (fromPf) paintInstrPfHold(sym, ex);
@@ -1998,6 +2027,7 @@ function wireInstrument(sym, ex, nm, ccyHint, fromPf) {
     const avg = avgE instanceof HTMLInputElement ? num(avgE.value) : 0;
     let ccy = ccyE instanceof HTMLInputElement ? ccyE.value.trim().toUpperCase() : "";
     if (!ccy) ccy = String(_instrQuoteCtx.q?.currency || _instrQuoteCtx.ccyHint || "").toUpperCase();
+    ccy = normalizeCcyForFx(ccy);
     if (!sym || !ccy || qty <= 0) {
       if (msg) msg.textContent = "Enter qty (> 0) and currency.";
       return;
@@ -2037,6 +2067,18 @@ function wireInstrument(sym, ex, nm, ccyHint, fromPf) {
   const mount = $("instrQuoteMount");
   if (mount) fillInstrQuoteMount(mount, sym, ex);
   syncHistChartTypeButtons();
+  const chartDetails = $("instrChartDetails");
+  if (chartDetails instanceof HTMLDetailsElement) {
+    chartDetails.addEventListener("toggle", () => {
+      if (!chartDetails.open) return;
+      if (!_instrQuoteCtx?.sym) return;
+      void ensureHistoryChartLoaded(_instrQuoteCtx.sym, _instrQuoteCtx.ex).then(() => {
+        requestAnimationFrame(() => {
+          redrawHistCanvas();
+        });
+      });
+    });
+  }
   $("instrChartDock")?.querySelectorAll("button[data-chart-type]").forEach((btn) => {
     if (!(btn instanceof HTMLButtonElement)) return;
     btn.addEventListener("click", () => {
@@ -2065,7 +2107,6 @@ function wireInstrument(sym, ex, nm, ccyHint, fromPf) {
       });
     }
   }
-  loadHistoryChart(sym, ex);
   void loadInstrumentNewsCorp(sym, ex);
   setInstrumentTab("ov");
   status(sym, document.documentElement.dataset.theme || "");
@@ -2509,6 +2550,32 @@ async function fillInstrQuoteMount(el, sym, ex) {
     _instrQuoteCtx.q = null;
     renderFundamentalsMount(sym, ex, null);
   }
+}
+
+/**
+ * Load daily history once per symbol (shared by the Price history panel and Technicals tab).
+ * If a fetch is already in flight, await the same promise.
+ */
+function ensureHistoryChartLoaded(sym, ex) {
+  if (!sym) return Promise.resolve();
+  const want = `${String(sym).trim()}\t${String(ex || "").trim()}`;
+  if (_histChartBars && _histChartBars.length >= 2) {
+    const have = _instrQuoteCtx
+      ? `${String(_instrQuoteCtx.sym).trim()}\t${String(_instrQuoteCtx.ex || "").trim()}`
+      : "";
+    if (have && have === want) return Promise.resolve();
+  }
+  if (_histLoadPromise) return _histLoadPromise;
+  const st = $("chartSt");
+  if (st && (!_histChartBars || _histChartBars.length < 2)) st.textContent = "Loading chart data…";
+  _histLoadPromise = (async () => {
+    try {
+      await loadHistoryChart(sym, ex);
+    } finally {
+      _histLoadPromise = null;
+    }
+  })();
+  return _histLoadPromise;
 }
 
 /** Fetches OHLC history (+ benchmark for RS55) and draws the Technicals chart. */
@@ -3543,9 +3610,33 @@ function pfInstrumentBucket(r) {
   return pfInferKindFromName(r.sym, r.nm);
 }
 
+/**
+ * Heuristic: coin held on the **Trading 212** stock tab (positions sometimes land in `j.t212` only).
+ * Used to split T212 vs **Crypto (T212)** in the combined € roll-up without double-counting.
+ */
+function isCryptoLikeT212Row(r) {
+  if (!r || typeof r !== "object") return false;
+  const ex = String(r.ex || "").toUpperCase();
+  if (/\bCRYPTO(CURRENCY)?\b/.test(ex)) return true;
+  const pk = String(r.pfKind || "").toUpperCase();
+  if (pk.includes("CRYPTO") || (pk.includes("CURRENCY") && /DIGITAL|CRYPTO/.test(pk))) return true;
+  const sym0 = String(r.sym || "")
+    .trim()
+    .toUpperCase();
+  const sym = sym0.split(/[-_/]/)[0] || sym0;
+  if (
+    /^(BTC|XBT|ETH|XRP|ADA|DOGE|SOL|DOT|AVAX|LTC|BCH|ETC|LINK|UNI|ATOM|NEAR|XLM|ALGO|PEPE|SHIB|TRX|TON|AAVE|CRV|LDO|MKR|INJ|RNDR|ARB|OP|IMX|GRT|HBAR|ICP|FIL|APT|STX|SUI|VET|QNT|BONK|WIF|JUP|FET|TAO|PYTH|STRK|TIA|ORDI|RUNE|ETN)$/.test(sym)
+  ) {
+    return true;
+  }
+  const nm = String(r.nm || "").toUpperCase();
+  if (/\b(BITCOIN|ETHEREUM|DOGECOIN|CRYPTOCURREN|CRYPTO\s*ASSET|SHIBA|LITECOIN|RIPPLE|SOLANA|CARDANO|AVALANCHE|POLKADOT|CHAINLINK|UNISWAP)\b/.test(nm)) return true;
+  return false;
+}
+
 /** Single listing currency for a ledger, or "" if mixed / missing. */
 function pfPrimaryCcy(rows) {
-  const g = new Set(rows.map((x) => String(x.ccy || "").toUpperCase()).filter(Boolean));
+  const g = new Set(rows.map((x) => normalizeCcyForFx(x.ccy)).filter(Boolean));
   return g.size === 1 ? [...g][0] : "";
 }
 
@@ -3717,61 +3808,9 @@ function pfMergeSmallSlices(slices, minShare) {
   return big.sort((a, b) => b.value - a.value);
 }
 
-/** Rule-based portfolio commentary (no LLM). `broker` is active ledger (`t212` / `zerodha`). */
-function buildPfIntelligenceHtml(rows, broker) {
-  if (broker === PF_INSURANCE || broker === PF_FIXED_DEPOSIT) {
-    return `<div class="h3">Ledger note</div>
-      <p class="sml muted">Allocation pies and ticker-based commentary apply to <strong>stock-style</strong> ledgers. For <strong>insurance</strong> and <strong>fixed deposits</strong>, use the table columns (premiums, invested total, current value) and the <strong>By ledger (€)</strong> block <strong>at the top</strong> of the page for the € rollup.</p>`;
-  }
-  if (!rows.length) return "";
-  const tot = rows.reduce((s, r) => s + pfRowWeight(r), 0);
-  if (tot <= 0) return "";
-  const withW = rows
-    .map((r) => ({ r, w: pfRowWeight(r), sym: String(r.sym || "").trim() }))
-    .filter((x) => x.w > 0 && x.sym)
-    .sort((a, b) => b.w - a.w);
-  const top = withW.slice(0, 5);
-  const top3w = withW.slice(0, 3).reduce((s, x) => s + x.w, 0);
-  const top3pct = (top3w / tot) * 100;
-  const sec = pfAggregate(rows, pfStrategySector);
-  const topSec = sec[0];
-  const secPct = topSec ? (topSec.value / tot) * 100 : 0;
-  let hhi = 0;
-  for (const sl of sec) hhi += (sl.value / tot) ** 2;
-  const codes = new Set(rows.map((r) => String(r.ccy || "").toUpperCase()).filter(Boolean));
-  const t212Style = broker === PF_T212 || broker === PF_CRYPTO;
-  const topLines = top
-    .map((x) => {
-      const p = (x.w / tot) * 100;
-      const nm = (x.r.nm || "").trim();
-      return `<li><strong>${esc(x.sym)}</strong> — about ${esc(fmtN(p, 1))}% of portfolio value${nm ? ` <span class="muted">(${esc(nm)})</span>` : ""}</li>`;
-    })
-    .join("");
-  const conc =
-    hhi > 0.28
-      ? "Concentration looks <strong>high</strong> in a few names — single-stock moves will sway the book."
-      : hhi > 0.18
-        ? "Concentration is <strong>moderate</strong> — still watch top positions and overlapping themes."
-        : "Line items look <strong>relatively spread</strong> by value — diversification is healthier on paper, but check for hidden factor overlap (e.g. same end demand).";
-  const ccyNote =
-    codes.size === 0
-      ? `<p>Some rows are missing a <strong>currency</strong> code — fix import or manual entry for meaningful FX and totals.</p>`
-      : codes.size > 1
-        ? `<p>You hold <strong>${codes.size}</strong> different currencies in this ledger — use per-row values or the <strong>EUR</strong> bridge (Trading 212) for a single base-currency read.</p>`
-        : `<p>All weighted rows use <strong>${esc([...codes][0])}</strong> as listing currency in this snapshot.</p>`;
-  const t212note = t212Style
-    ? "<p>For <strong>Trading 212</strong> / <strong>Crypto (T212)</strong>, use <strong>Sync</strong> or <strong>Refresh prices</strong> to pull live figures from the read-only API, then read the <strong>EUR totals</strong> card — ECB reference rates (not broker spreads).</p>"
-    : "<p>When FX loads, the <strong>By ledger (€)</strong> block at the <strong>top</strong> of the page shows a cross-ledger view.</p>";
-  return `
-    <div class="h3">Portfolio briefing <span class="sml muted">(rule-based lens)</span></div>
-    <p class="sml muted">Deterministic summary from saved rows and last prices — not advice. <strong>LLM “AI commentary”</strong> (yellow banner when missing keys) is separate: it needs API keys in <code>.env</code>; this block always runs in-browser.</p>
-    <ul class="pfBrainList mt">${topLines}</ul>
-    <p class="mt">Top three names ≈ <strong>${esc(fmtN(top3pct, 0))}%</strong> of value. ${conc}</p>
-    <p>Largest <em>strategy sector</em> bucket: <strong>${esc(topSec?.label || "—")}</strong> (~<strong>${esc(fmtN(secPct, 0))}%</strong>).</p>
-    ${ccyNote}
-    ${t212note}
-    <details class="pfMetaDetails mt"><summary class="sml muted">How sectors &amp; charts are built</summary>
-    <p class="sml muted" style="margin:8px 0 0">Sectors use ticker + name <strong>keywords</strong> (IT, manufacturing, medical, …), not GICS. Allocation pies use market value (qty × last). Instrument charts may use <strong>session snapshots</strong> when quote providers rate-limit.</p></details>`;
+/** (Optional) rule-based text — turned off to keep the portfolio view uncluttered. */
+function buildPfIntelligenceHtml(/** @type {unknown[]} */ _rows, /** @type {string} */ _broker) {
+  return "";
 }
 
 function readThemeCssVar(name, fallback) {
@@ -3787,7 +3826,8 @@ function drawPfPieCanvas(canvas, slices) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const css = 188;
+  const rawW = Number(canvas.getAttribute("width")) || 120;
+  const css = Math.min(200, Math.max(96, rawW));
   canvas.width = Math.floor(css * dpr);
   canvas.height = Math.floor(css * dpr);
   canvas.style.width = `${css}px`;
@@ -3797,8 +3837,8 @@ function drawPfPieCanvas(canvas, slices) {
   ctx.clearRect(0, 0, css, css);
   const cx = css / 2;
   const cy = css / 2;
-  const R = 70;
-  const r0 = 40;
+  const R = css * 0.37;
+  const r0 = css * 0.21;
   const holeRgb = readThemeCssVar("--card", "#1e293b");
   const edgeRgb = readThemeCssVar("--bd", "rgba(148,163,184,0.35)");
   const tot = slices.reduce((s, x) => s + x.value, 0);
@@ -3839,7 +3879,8 @@ function pfSectorBreakdownHtml(rows, detailSlices) {
     return `<details class="pfMetaDetails pfSectorDetails mt"><summary class="sml muted">Strategy sector weights (detail)</summary><p class="sml muted mt">No sector weights yet — use <strong>Refresh prices</strong> and ensure rows have qty and last (or avg).</p></details>`;
   }
   const ccy = pfPrimaryCcy(rows);
-  const valTh = ccy ? `Value (${esc(ccy)})` : "Value";
+  const ccyD = ccy ? formatCcyLabel(ccy) : "";
+  const valTh = ccyD ? `Value (${esc(ccyD)})` : "Value";
   const rowsHtml = detailSlices
     .map((sl) => {
       const pct = (sl.value / tot) * 100;
@@ -3881,43 +3922,41 @@ function renderPfCharts(rows) {
     return;
   }
   mount.hidden = false;
-  const cur = pfAggregate(rows, (r) => String(r.ccy || "—").toUpperCase() || "—");
+  const cur = pfAggregate(rows, (r) => {
+    const c = normalizeCcyForFx(r.ccy);
+    return c || "—";
+  });
   const ctry = pfAggregate(rows, pfInferCountry);
   const kind = pfAggregate(rows, pfInstrumentBucket);
   const sector = pfAggregate(rows, pfStrategySector);
-  const sectorDetail = pfAggregate(rows, pfStrategySector, false);
   const brain = buildPfIntelligenceHtml(rows, getActiveBroker());
   mount.innerHTML = `
     <div class="card2 pfAllocCard">
       <div class="h3">Allocation</div>
-      <p class="sml muted pfAllocLead">Slices by <strong>market value</strong> (qty × last). Use <strong>Refresh prices</strong> so instrument type can pick up Yahoo <code>quoteType</code> when available.</p>
-      <details class="pfMetaDetails"><summary class="sml muted">Country, type &amp; sector rules</summary>
-      <p class="sml muted" style="margin:8px 0 0">Country prefers exchange / ticker suffix, then listing currency. Instrument type falls back to name heuristics. <strong>Strategy sector</strong> uses global keywords plus <strong>NSE/BSE symbol lists</strong> when currency is INR or exchange is NSE/BSE (typical Zerodha CSVs without names). Not GICS.</p></details>
       <div class="pfPieGrid">
         <figure class="pfPieCard">
           <figcaption class="pfCap">Currency</figcaption>
-          <canvas class="pfPie" width="188" height="188" data-which="ccy" aria-label="Currency allocation"></canvas>
+          <canvas class="pfPie" width="120" height="120" data-which="ccy" aria-label="Currency allocation"></canvas>
           ${pfPieLegendHtml(cur)}
         </figure>
         <figure class="pfPieCard">
           <figcaption class="pfCap">Country / region</figcaption>
-          <canvas class="pfPie" width="188" height="188" data-which="ctry" aria-label="Country allocation"></canvas>
+          <canvas class="pfPie" width="120" height="120" data-which="ctry" aria-label="Country allocation"></canvas>
           ${pfPieLegendHtml(ctry)}
         </figure>
         <figure class="pfPieCard">
           <figcaption class="pfCap">Instrument type</figcaption>
-          <canvas class="pfPie" width="188" height="188" data-which="kind" aria-label="Instrument type allocation"></canvas>
+          <canvas class="pfPie" width="120" height="120" data-which="kind" aria-label="Instrument type allocation"></canvas>
           ${pfPieLegendHtml(kind)}
         </figure>
         <figure class="pfPieCard">
           <figcaption class="pfCap">Strategy sector</figcaption>
-          <canvas class="pfPie" width="188" height="188" data-which="sector" aria-label="Strategy sector allocation"></canvas>
+          <canvas class="pfPie" width="120" height="120" data-which="sector" aria-label="Strategy sector allocation"></canvas>
           ${pfPieLegendHtml(sector)}
         </figure>
       </div>
-      ${pfSectorBreakdownHtml(rows, sectorDetail)}
     </div>
-    <div class="card2 mt pfBrainCard">${brain}</div>`;
+    ${brain ? `<div class="card2 mt pfBrainCard">${brain}</div>` : ""}`;
   const cans = mount.querySelectorAll("canvas.pfPie");
   const sets = [cur, ctry, kind, sector];
   cans.forEach((c, i) => {
@@ -4169,8 +4208,7 @@ function updatePfLedgerTotals(rows, rowObjs, multi, oneCcy, codes, tVal, tPl) {
   if (multi) {
     el.innerHTML = `<div class="pfTotalsStrip pfTotalsStripMulti" role="region" aria-label="Active ledger totals">
     <div class="pfTotalsStripInner">
-      <span class="pfTotalsLedger muted sml">${esc(lab)} · multiple currencies</span>
-      <p class="sml muted" style="margin:8px 0 0">Per-row values stay in each line’s currency. The <strong>Trading 212 — totals in EUR</strong> card is just above the table. The <strong>By ledger (€)</strong> block at the <strong>top</strong> of the page rolls up every ledger when FX loads.</p>
+      <span class="pfTotalsLedger muted sml">${esc(lab)} — multiple currencies</span>
     </div>
   </div>`;
     return;
@@ -4178,7 +4216,6 @@ function updatePfLedgerTotals(rows, rowObjs, multi, oneCcy, codes, tVal, tPl) {
   el.innerHTML = `<div class="pfTotalsStrip pfTotalsStripMulti" role="region" aria-label="Active ledger totals">
     <div class="pfTotalsStripInner">
       <span class="pfTotalsLedger muted sml">${esc(lab)}</span>
-      <p class="sml muted" style="margin:8px 0 0">Add a <strong>currency</strong> on each row (import or edit) so market-value totals and EUR conversion can run.</p>
     </div>
   </div>`;
 }
@@ -4223,7 +4260,6 @@ function paintPfAddFieldsMount() {
   if (b === PF_INSURANCE) {
     const coLab = esc(PF_INS_CO_LABEL[getPfInsuranceCompany()] || "");
     mount.innerHTML = `
-      <p class="sml muted pfAddHint">Adding to <strong>${coLab}</strong> — not a stock row.</p>
       <label class="lbl pfAddField">Policy name
         <input class="in" id="fPolName" placeholder="e.g. Smart Wealth" autocomplete="off" />
       </label>
@@ -4249,7 +4285,6 @@ function paintPfAddFieldsMount() {
   }
   if (b === PF_CRYPTO) {
     mount.innerHTML = `
-      <p class="sml muted pfAddHint">Manual crypto (e.g. <strong>BTC</strong>, <strong>ETH</strong>) — enter <strong>USD</strong> in Currency if you use US dollar spot. After Add, the app fetches a <strong>live</strong> last from the same quote source as Search. You can also use <strong>Sync from Trading 212</strong> for open broker positions, then <strong>Refresh prices</strong> to fill in last (USD) for every row.</p>
       <label class="lbl pfAddField">Symbol
         <input class="in" id="fSym" placeholder="BTC, ETH" autocomplete="off" />
       </label>
@@ -4275,7 +4310,6 @@ function paintPfAddFieldsMount() {
   }
   if (b === PF_FIXED_DEPOSIT) {
     mount.innerHTML = `
-      <p class="sml muted pfAddHint">Fixed deposit row (not a ticker).</p>
       <label class="lbl pfAddField">Bank / institution
         <input class="in" id="fFdBank" placeholder="SBI, HDFC…" autocomplete="off" />
       </label>
@@ -4392,8 +4426,7 @@ function renderPfInsuranceTable(el) {
     }),
   );
   if (!rows.length) {
-    el.innerHTML = `<p class="muted">No policies under <strong>${esc(PF_INS_CO_LABEL[co])}</strong> yet.</p>
-      <p class="sml muted mt">Use <strong>Add row</strong> below or import an insurance CSV for this provider. Legacy stock-style rows live under <strong>Other (5th slot)</strong> until you move them.</p>`;
+    el.innerHTML = `<p class="muted">No policies for <strong>${esc(PF_INS_CO_LABEL[co])}</strong> yet.</p>`;
     pfClearTableMountState();
     renderPfCharts([]);
     void refreshPfCombinedEur();
@@ -4404,13 +4437,13 @@ function renderPfInsuranceTable(el) {
       const invested = insuranceInvestedTotal(r);
       const val = num(r.currentValue);
       const pl = val - invested;
-      const ccy = String(r.ccy || "INR").toUpperCase();
+      const ccy = normalizeCcyForFx(String(r.ccy || "INR").toUpperCase());
       return { r, invested, val, pl, ccy };
     }
     const qty = num(r.qty);
     const avg = num(r.avg);
     const last = num(r.last);
-    return { r, invested: qty * avg, val: qty * last, pl: qty * (last - avg), ccy: String(r.ccy || "").toUpperCase() };
+    return { r, invested: qty * avg, val: qty * last, pl: qty * (last - avg), ccy: normalizeCcyForFx(String(r.ccy || "").toUpperCase()) };
   });
   const codes = new Set(rowObjs.map((o) => o.ccy).filter(Boolean));
   const multi = codes.size > 1;
@@ -4462,7 +4495,7 @@ function renderPfInsuranceTable(el) {
           <td class="pfNum">${esc(fmtN(num(r.growthPct), 2))}%</td>
           <td class="pfNum">${esc(fmtMoney(ccy, val))}</td>
           <td class="pfNum pfPlCol ${cls}">${esc(fmtMoney(ccy, pl))}</td>
-          <td class="sml">${esc(ccy)}</td>
+          <td class="sml">${esc(formatCcyLabel(ccy))}</td>
           <td class="pfActCol"><button type="button" class="btn ghost smlBtn" data-pf-prem="${esc(rid)}">Log premium</button>
             <button type="button" class="btn ghost smlBtn" data-pf-rm="${esc(rid)}">Remove</button>
             <span class="muted sml">${pc} payment(s)</span></td>
@@ -4476,7 +4509,7 @@ function renderPfInsuranceTable(el) {
         <td class="pfNum">—</td>
         <td class="pfNum">${esc(fmtMoney(ccy, val))}</td>
         <td class="pfNum pfPlCol ${cls}">${esc(fmtMoney(ccy, pl))}</td>
-        <td>${esc(ccy)}</td>
+        <td>${esc(formatCcyLabel(ccy))}</td>
         <td class="pfActCol"><button type="button" class="btn ghost smlBtn" data-pf-rm="${esc(rid)}">Remove</button></td>
       </tr>`;
     })
@@ -4499,8 +4532,7 @@ function renderPfFdTable(el) {
     String(a.fdName || a.sym || "").localeCompare(String(b.fdName || b.sym || ""), undefined, { sensitivity: "base" }),
   );
   if (!rows.length) {
-    el.innerHTML = `<p class="muted">No fixed deposits yet.</p>
-      <p class="sml muted mt">Use <strong>Add row</strong> or import the FD CSV template.</p>`;
+    el.innerHTML = `<p class="muted">No fixed deposits yet.</p>`;
     pfClearTableMountState();
     renderPfCharts([]);
     void refreshPfCombinedEur();
@@ -4511,13 +4543,13 @@ function renderPfFdTable(el) {
       const inv = num(r.principal);
       const val = num(r.currentValue);
       const pl = val - inv;
-      const ccy = String(r.ccy || "INR").toUpperCase();
+      const ccy = normalizeCcyForFx(String(r.ccy || "INR").toUpperCase());
       return { r, inv, val, pl, ccy };
     }
     const qty = num(r.qty);
     const avg = num(r.avg);
     const last = num(r.last);
-    return { r, inv: qty * avg, val: qty * last, pl: qty * (last - avg), ccy: String(r.ccy || "").toUpperCase() };
+    return { r, inv: qty * avg, val: qty * last, pl: qty * (last - avg), ccy: normalizeCcyForFx(String(r.ccy || "").toUpperCase()) };
   });
   const codes = new Set(rowObjs.map((o) => o.ccy).filter(Boolean));
   const multi = codes.size > 1;
@@ -4565,7 +4597,7 @@ function renderPfFdTable(el) {
           <td class="pfNum">${esc(fmtN(num(r.ratePct), 2))}%</td>
           <td class="pfNum">${esc(fmtMoney(ccy, val))}</td>
           <td class="sml">${esc(r.maturityDate || "—")}</td>
-          <td>${esc(ccy)}</td>
+          <td>${esc(formatCcyLabel(ccy))}</td>
           <td class="pfNum pfPlCol ${cls}">${esc(fmtMoney(ccy, pl))}</td>
           <td class="pfActCol"><button type="button" class="btn ghost smlBtn" data-pf-rm="${esc(rid)}">Remove</button></td>
         </tr>`;
@@ -4574,7 +4606,7 @@ function renderPfFdTable(el) {
       return `<tr>
         <td colspan="5"><span class="muted">Legacy</span> <a class="pfSymLink" href="${href}"><strong>${esc(r.sym)}</strong></a></td>
         <td class="pfNum">${esc(fmtMoney(ccy, inv))}</td><td>—</td>
-        <td class="pfNum">${esc(fmtMoney(ccy, val))}</td><td>—</td><td>${esc(ccy)}</td>
+        <td class="pfNum">${esc(fmtMoney(ccy, val))}</td><td>—</td><td>${esc(formatCcyLabel(ccy))}</td>
         <td class="pfNum pfPlCol ${cls}">${esc(fmtMoney(ccy, pl))}</td>
         <td class="pfActCol"><button type="button" class="btn ghost smlBtn" data-pf-rm="${esc(rid)}">Remove</button></td>
       </tr>`;
@@ -4615,18 +4647,13 @@ function renderPf() {
     String(a.sym || a.nm || "").localeCompare(String(b.sym || b.nm || ""), undefined, { sensitivity: "base" }),
   );
   if (!rows.length) {
-    const t212Hint =
-      b === PF_CRYPTO
-        ? `<p class="sml muted mt">This tab is for <strong>crypto you hold in Trading 212</strong>. Use <strong>Sync from Trading 212</strong> (server needs your API key pair in <code>.env</code>). If the list is empty but you hold coins, the broker’s <strong>public</strong> API may not return crypto for your account type — you can still add rows manually or via CSV.</p>`
-        : "";
-    el.innerHTML = `<p class="muted">No rows in this broker ledger yet.</p>
-      <p class="sml muted mt">Portfolio data lives in <strong>this browser’s local storage</strong> for this exact site (<code>localhost</code> vs <code>127.0.0.1</code> and port number each get their own copy). If you cleared site data, used a new profile, or opened a different URL, re-import CSV or sync from the broker. If you still had the old app key on this device, the app tries a one-time migration from the legacy save.</p>${t212Hint}`;
+    el.innerHTML = `<p class="muted">No rows in this ledger yet.</p>`;
     pfClearTableMountState();
     renderPfCharts([]);
     void refreshPfCombinedEur();
     return;
   }
-  const codes = new Set(rows.map((r) => String(r.ccy || "").toUpperCase()).filter(Boolean));
+  const codes = new Set(rows.map((r) => normalizeCcyForFx(r.ccy)).filter(Boolean));
   const multi = codes.size > 1;
   const showName = rows.some((r) => (r.nm || "").trim());
   const rowObjs = rows.map((r) => {
@@ -4663,7 +4690,7 @@ function renderPf() {
         <td class="pfSymCol"><strong><a class="pfSymLink" href="${href}">${esc(r.sym)}</a></strong></td>
         ${nmCell}
         <td class="pfExCol">${esc(r.ex)}</td>
-        <td>${esc(r.ccy)}</td>
+        <td>${esc(formatCcyLabel(r.ccy))}</td>
         <td class="pfNum">${esc(fmtN(qty, 4))}</td>
         <td class="pfNum">${esc(fmtMoney(r.ccy, avg))}</td>
         <td class="pfNum">${esc(fmtMoney(r.ccy, last))}</td>
@@ -4678,7 +4705,7 @@ function renderPf() {
   const nc = showName ? 1 : 0;
   const foot = !multi
     ? `<tr class="tot"><td colspan="${6 + nc}"><strong>Total</strong></td><td class="pfNum"><strong>${esc(fmtMoney(oneCcy, tVal))}</strong></td><td class="sml pfNum"><strong>100%</strong></td><td class="pfNum pfPlCol ${tPl >= 0 ? "plp" : "pln"}"><strong>${esc(fmtMoney(oneCcy, tPl))}</strong></td></tr>`
-    : `<tr class="tot"><td colspan="${8 + nc}" class="muted">Multiple currencies — row amounts stay native. <strong>Trading 212</strong> tab: EUR rollup card is under the tab strip. <strong>All ledgers in €</strong> are in the <strong>By ledger (€)</strong> block at the <strong>top</strong> of the page when FX loads. <strong>Weight</strong> is hidden until this tab uses a single currency.</td></tr>`;
+    : `<tr class="tot"><td colspan="${8 + nc}" class="muted">Multiple currencies in this table.</td></tr>`;
   const thName = showName ? "<th>Name</th>" : "";
   el.innerHTML = `<div class="pfTableWrap" role="region" aria-label="Holdings table"><table class="pfHoldingsTbl"><thead><tr>
     <th class="pfSymCol">Sym</th>${thName}<th class="pfExCol">Ex</th><th>Ccy</th><th class="pfNum">Qty</th><th class="pfNum">Avg</th><th class="pfNum">Last</th><th class="pfNum">Value</th>${thWeight}<th class="pfNum pfPlCol">P/L</th>
@@ -4719,6 +4746,9 @@ async function fetchEurFxTable() {
         lastErr = new Error("no eur_per_unit");
         continue;
       }
+      const ep = { ...j.eur_per_unit };
+      if (typeof ep.EUR !== "number" || !Number.isFinite(ep.EUR) || ep.EUR <= 0) ep.EUR = 1;
+      j.eur_per_unit = ep;
       return j;
     } catch (e) {
       lastErr = e;
@@ -4735,7 +4765,7 @@ function brokerRowsForEurLedger(brokerId, rows) {
       if (isInsuranceAltRow(r)) {
         const inv = insuranceInvestedTotal(r);
         const last = num(r.currentValue);
-        const ccy = String(r.ccy || "INR").toUpperCase();
+        const ccy = normalizeCcyForFx(String(r.ccy || "INR").toUpperCase());
         const px = last > 0 ? last : inv;
         return { ccy, qty: 1, avg: inv, last: px };
       }
@@ -4747,7 +4777,7 @@ function brokerRowsForEurLedger(brokerId, rows) {
       if (isFdAltRow(r)) {
         const inv = num(r.principal);
         const last = num(r.currentValue);
-        const ccy = String(r.ccy || "INR").toUpperCase();
+        const ccy = normalizeCcyForFx(String(r.ccy || "INR").toUpperCase());
         const px = last > 0 ? last : inv;
         return { ccy, qty: 1, avg: inv, last: px };
       }
@@ -4762,13 +4792,15 @@ function portfolioEurFromRows(rows, eurPer) {
   let costE = 0;
   const miss = new Set();
   for (const row of rows) {
-    const ccy = String(row.ccy || "").toUpperCase();
+    const raw = String(row.ccy || "").trim();
+    const ccy = normalizeCcyForFx(raw);
     const qty = num(row.qty);
     const avg = num(row.avg);
     const last = num(row.last);
-    const rate = eurPer[ccy];
-    if (typeof rate !== "number" || !Number.isFinite(rate)) {
-      if (ccy) miss.add(ccy);
+    const rate = ccy ? eurPerUnitToEur(eurPer, ccy) : undefined;
+    if (rate == null) {
+      if (raw) miss.add(raw);
+      else if (ccy) miss.add(ccy);
       continue;
     }
     totE += qty * last * rate;
@@ -4800,10 +4832,32 @@ async function refreshPfCombinedEur() {
   try {
     const j = await fetchEurFxTable();
     const eurPer = j.eur_per_unit;
+    const t212All = Array.isArray(bundle.brokers[PF_T212]?.rows) ? bundle.brokers[PF_T212].rows : [];
+    const t212Crypto = t212All.filter(isCryptoLikeT212Row);
+    const t212Stocks = t212All.filter((r) => !isCryptoLikeT212Row(r));
+    const cryptoStandalone = Array.isArray(bundle.brokers[PF_CRYPTO]?.rows) ? bundle.brokers[PF_CRYPTO].rows : [];
+    const cryptoCombined = [...cryptoStandalone, ...t212Crypto];
     const legs = PF_BROKER_IDS.map((id) => {
-      const rows = brokerRowsForEurLedger(id, bundle.brokers[id].rows);
-      const p = portfolioEurFromRows(rows, eurPer);
-      return { id, label: PF_BROKER_LABEL[id], ...p };
+      let rawForCount;
+      let eurInputRows;
+      if (id === PF_T212) {
+        eurInputRows = brokerRowsForEurLedger(PF_T212, t212Stocks);
+        rawForCount = t212All;
+      } else if (id === PF_CRYPTO) {
+        eurInputRows = brokerRowsForEurLedger(PF_CRYPTO, cryptoCombined);
+        rawForCount = cryptoCombined;
+      } else {
+        const rawRows = bundle.brokers[id].rows;
+        eurInputRows = brokerRowsForEurLedger(id, rawRows);
+        rawForCount = rawRows;
+      }
+      const p = portfolioEurFromRows(eurInputRows, eurPer);
+      return {
+        id,
+        label: PF_BROKER_LABEL[id],
+        rowCount: Array.isArray(rawForCount) ? rawForCount.length : 0,
+        ...p,
+      };
     });
     const combTot = legs.reduce((s, L) => s + L.totE, 0);
     const combCost = legs.reduce((s, L) => s + L.costE, 0);
@@ -4812,43 +4866,52 @@ async function refreshPfCombinedEur() {
     for (const L of legs) for (const m of L.miss) miss.add(m);
     const missTxt =
       miss.size > 0
-        ? `<p class="muted sml">No rate for <strong>${esc([...miss].join(", "))}</strong> — those rows are excluded from EUR sums.</p>`
+        ? `<p class="muted sml" style="margin:8px 0 0">Missing FX: <strong>${esc([...miss].join(", "))}</strong></p>`
         : "";
     const src = esc(j.source || "ECB reference");
     const dt = esc(j.date || "");
-    const disc = j.disclaimer ? `<p class="sml muted">${esc(j.disclaimer)}</p>` : "";
-    const cell = (label, totE, costE, plE, emptyMsg) => {
+    const cell = (label, totE, costE, plE, nRows, legMiss) => {
+      if (nRows <= 0) {
+        return `<div class="pfEurCell"><span class="muted sml">${esc(label)}</span><div class="pfEurBig muted">—</div><p class="sml muted">No rows</p></div>`;
+      }
       if (!totE && !costE && !plE) {
-        return `<div class="pfEurCell"><span class="muted sml">${esc(label)}</span><div class="pfEurBig muted">—</div><p class="sml muted">${esc(emptyMsg)}</p></div>`;
+        const m =
+          legMiss && legMiss.size > 0
+            ? `No ECB rate: ${[...legMiss].join(", ")}`
+            : "—";
+        return `<div class="pfEurCell"><span class="muted sml">${esc(label)}</span><div class="pfEurBig muted">${esc(fmtMoney("EUR", 0))}</div>
+        <div class="sml muted">Cost ${esc(fmtMoney("EUR", 0))}</div>
+        <div class="sml">P/L <strong>${esc(fmtMoney("EUR", 0))}</strong></div>
+        <p class="sml muted mt" style="margin-bottom:0;opacity:0.85">${esc(m)}</p></div>`;
       }
       const plCls = plE >= 0 ? "plp" : "pln";
       return `<div class="pfEurCell"><span class="muted sml">${esc(label)}</span><div class="pfEurBig">${esc(fmtMoney("EUR", totE))}</div>
         <div class="sml muted">Cost ${esc(fmtMoney("EUR", costE))}</div>
         <div class="sml ${plCls}">P/L <strong>${esc(fmtMoney("EUR", plE))}</strong></div></div>`;
     };
-    const legCells = legs.map((L) => cell(L.label, L.totE, L.costE, L.plE, "No rows")).join("");
+    const legCells = legs
+      .map((L) => cell(L.label, L.totE, L.costE, L.plE, L.rowCount, L.miss))
+      .join("");
     const combCell = `<div class="pfEurCell pfEurCellHighlight"><span class="muted sml">All ledgers combined</span><div class="pfEurBig">${esc(fmtMoney("EUR", combTot))}</div>
       <div class="sml muted">Cost ${esc(fmtMoney("EUR", combCost))}</div>
       <div class="sml ${combPl >= 0 ? "plp" : "pln"}">P/L <strong>${esc(fmtMoney("EUR", combPl))}</strong></div></div>`;
     box.innerHTML = `<div class="card2 pfCombinedEurInner">
       <div class="h3">By ledger (€) — all accounts</div>
-      <p class="sml muted">Same <strong>${src}</strong> rates as the total card · <strong>${dt}</strong>. Each cell is that ledger’s market value, cost, and P/L in <strong>€</strong> (row currencies converted at ECB mid; see table for native amounts).</p>
-      ${disc}
+      <p class="sml muted" style="margin:0 0 2px">ECB ref · <strong>${src}</strong> · <strong>${dt}</strong></p>
       <div class="pfEurGrid pfEurGridWide mt">${legCells}${combCell}</div>${missTxt}</div>`;
     if (grand) {
       const missGrand =
         miss.size > 0
-          ? `<p class="sml muted mt">Some currency codes have no ECB rate in this response — those rows are omitted from the figures above.</p>`
+          ? `<p class="sml muted mt" style="margin-bottom:0">Some rows omitted: missing rates above.</p>`
           : "";
       const plCls = combPl >= 0 ? "plp" : "pln";
       grand.hidden = false;
       grand.innerHTML = `<div class="card2 pfGrandTotalInner" role="region" aria-label="Total portfolio in euro">
-        <div class="sml muted">All ledgers combined · <strong>${src}</strong> · ${dt}</div>
+        <div class="sml muted">${src} · ${dt}</div>
         <div class="pfGrandTotalFigRow mt"><span class="pfGrandTotalLab">Total market value</span><span class="pfGrandTotalFig">${esc(fmtMoney("EUR", combTot))}</span></div>
         <div class="pfGrandTotalSubRow sml muted"><span>Cost basis (same FX)</span><span>${esc(fmtMoney("EUR", combCost))}</span></div>
         <div class="pfGrandTotalSubRow sml ${plCls}"><span>Unrealized P/L</span><span><strong>${esc(fmtMoney("EUR", combPl))}</strong></span></div>
         ${missGrand}
-        <p class="sml muted mt" style="margin-bottom:0">Each tab still shows <strong>local row currencies</strong>; this strip is the <strong>€</strong> rollup only.</p>
       </div>`;
     }
   } catch {
@@ -4866,13 +4929,12 @@ async function refreshPfT212Euro(rows, multi, oneCcy, tVal, tPl, eurTitle) {
   const title = eurTitle || "Trading 212 — totals in EUR";
   const box = $("pfT212Eur");
   if (!box || !rows.length) return;
-  const allEur = rows.every((r) => String(r.ccy || "").toUpperCase() === "EUR");
+  const allEur = rows.every((r) => normalizeCcyForFx(String(r.ccy || "")) === "EUR");
   if (allEur && !multi) {
     let cost = 0;
     for (const row of rows) cost += num(row.qty) * num(row.avg);
     const pl = tVal - cost;
     box.innerHTML = `<div class="h3">${esc(title)}</div>
-      <p class="sml muted">All rows are already in <strong>EUR</strong> — same as the table total.</p>
       <div class="pfEurGrid mt">
         <div><span class="muted sml">Market value</span><div class="pfEurBig">${esc(fmtMoney("EUR", tVal))}</div></div>
         <div><span class="muted sml">Cost basis</span><div>${esc(fmtMoney("EUR", cost))}</div></div>
@@ -4890,21 +4952,19 @@ async function refreshPfT212Euro(rows, multi, oneCcy, tVal, tPl, eurTitle) {
         : "";
     const src = esc(j.source || "ECB reference");
     const dt = esc(j.date || "");
-    const disc = j.disclaimer ? `<p class="sml muted">${esc(j.disclaimer)}</p>` : "";
     if (!totE && !costE && miss.size) {
       box.innerHTML = `<p class="err">Could not convert any row to EUR (missing FX codes).</p>${missTxt}`;
       return;
     }
     box.innerHTML = `<div class="h3">${esc(title)}</div>
-      <p class="sml muted">Using <strong>${src}</strong>, rate date <strong>${dt}</strong>. Mid-market reference only — not your broker’s fill price.</p>
-      ${disc}
+      <p class="sml muted" style="margin:0 0 6px">${src} · ${dt}</p>
       <div class="pfEurGrid mt">
         <div><span class="muted sml">Market value</span><div class="pfEurBig">${esc(fmtMoney("EUR", totE))}</div></div>
         <div><span class="muted sml">Cost basis (same FX)</span><div>${esc(fmtMoney("EUR", costE))}</div></div>
         <div><span class="muted sml">P/L</span><div class="${plE >= 0 ? "plp" : "pln"}"><strong>${esc(fmtMoney("EUR", plE))}</strong></div></div>
       </div>${missTxt}`;
   } catch {
-    box.innerHTML = `<p class="err">Could not load EUR conversion.</p><p class="sml muted">Open <a href="/api/fx-eur" target="_blank" rel="noopener"><code>/api/fx-eur</code></a> in a new tab to test the server. The app retries up to three times.</p>`;
+    box.innerHTML = `<p class="err">Could not load EUR conversion.</p>`;
   }
 }
 
@@ -4953,13 +5013,23 @@ async function applyLiveQuotesToRowsForBroker(bundle, b) {
   const rows = bundle.brokers[b].rows;
   const syms = [...new Set(rows.map((r) => r.sym).filter(Boolean))];
   if (!syms.length) return 0;
+  /** Yahoo `*-USD` is USD / coin; rows in **EUR** get USD→€ using ECB table. */
+  let fxEur = /** @type {{ eur_per_unit: Record<string, number> } | null} */ (null);
+  if (b === PF_CRYPTO || b === PF_T212) {
+    try {
+      fxEur = await fetchEurFxTable();
+    } catch {
+      fxEur = null;
+    }
+  }
   let n = 0;
   for (let i = 0; i < syms.length; i++) {
     const s = syms[i];
     status(`Quote ${i + 1}/${syms.length}: ${s}`);
     const row0 = rows.find((r) => r.sym === s);
     const ex = row0?.ex || "";
-    const u = buildQuoteUrlParams(s, ex, b);
+    const u =
+      b === PF_T212 && row0 && isCryptoLikeT212Row(row0) ? buildQuoteUrlParams(s, ex, PF_CRYPTO) : buildQuoteUrlParams(s, ex, b);
     try {
       const r = await fetch(`/api/quote?${u}`);
       if (!r.ok) continue;
@@ -4967,8 +5037,16 @@ async function applyLiveQuotesToRowsForBroker(bundle, b) {
       const q = Array.isArray(j) ? j[0] : null;
       const px = num(q?.price);
       if (px > 0) {
+        const eurPer = fxEur?.eur_per_unit;
+        const usdToEur = eurPer ? eurPerUnitToEur(eurPer, "USD") : undefined;
         rows.forEach((row) => {
-          if (row.sym === s) row.last = px;
+          if (row.sym !== s) return;
+          let v = px;
+          const ccyN = normalizeCcyForFx(row.ccy);
+          if (eurPer && usdToEur != null && ccyN === "EUR" && (b === PF_CRYPTO || (b === PF_T212 && isCryptoLikeT212Row(row)))) {
+            v = px * usdToEur;
+          }
+          row.last = v;
         });
         n++;
       }
@@ -4992,6 +5070,7 @@ function normalizeT212SyncedRow(r) {
   const o = { ...r };
   if (t) o.pfRowId = `t212:${t}`.replace(/[^\w.:-]+/g, "_");
   else ensurePfRowId(o);
+  if (o.ccy) o.ccy = normalizeCcyForFx(String(o.ccy).toUpperCase());
   return o;
 }
 
@@ -5049,6 +5128,10 @@ async function refreshPf() {
     status("Syncing from Trading 212…");
     try {
       const j = await applyTrading212SyncToBundle();
+      const b2 = loadPfBundle();
+      if (b2.brokers[PF_T212].rows.length) await applyLiveQuotesToRowsForBroker(b2, PF_T212);
+      if (b2.brokers[PF_CRYPTO].rows.length) await applyLiveQuotesToRowsForBroker(b2, PF_CRYPTO);
+      savePfBundle(b2);
       renderPf();
       const ns = Number(j.n_t212 ?? 0) || 0;
       const nc = Number(j.n_t212_crypto ?? 0) || 0;
@@ -5285,7 +5368,7 @@ function parseInsuranceCsv(text) {
     const c = row(ln);
     if (!c.length || c.every((cell) => !String(cell).trim())) continue;
     const pn = String(c[iPn] || "").trim();
-    const ccy = String(c[iCcy] || "").trim().toUpperCase();
+    const ccy = normalizeCcyForFx(String(c[iCcy] || "").trim().toUpperCase());
     if (!pn || !ccy) continue;
     let insCompany = iCo >= 0 ? normalizeInsCompanyImport(c[iCo]) : "";
     if (!isPfInsCoId(insCompany)) insCompany = fallbackCo;
@@ -5338,7 +5421,7 @@ function parseFdCsv(text) {
     if (!c.length || c.every((cell) => !String(cell).trim())) continue;
     const bank = String(c[iBank] || "").trim();
     const nm = String(c[iName] || "").trim();
-    const ccy = String(c[iCcy] || "").trim().toUpperCase();
+    const ccy = normalizeCcyForFx(String(c[iCcy] || "").trim().toUpperCase());
     const pr = num(c[iPr]);
     if (!bank || !nm || !ccy || pr <= 0) continue;
     const cur = iCur >= 0 ? num(c[iCur]) : pr;
@@ -5388,7 +5471,7 @@ function parseCsvSmart(text) {
     out.push({
       sym,
       ex: iE >= 0 ? (c[iE] || "").trim() : "",
-      ccy: (c[iC] || "").trim().toUpperCase(),
+      ccy: normalizeCcyForFx((c[iC] || "").trim().toUpperCase()),
       qty: num(c[iQ]),
       avg: iA >= 0 ? num(c[iA]) : 0,
       last: iL >= 0 ? num(c[iL]) : 0,
@@ -5423,7 +5506,7 @@ function parseT212(text) {
     if (!buy && !sell) continue;
     const sh = num(c[is]);
     const px = num(c[ip]);
-    const ccy = ic >= 0 ? (c[ic] || "").trim().toUpperCase() : "";
+    const ccy = ic >= 0 ? normalizeCcyForFx((c[ic] || "").trim().toUpperCase()) : "";
     if (sh <= 0 || px <= 0) continue;
     const isin = iisin >= 0 ? (c[iisin] || "").trim() : "";
     const k = `${sym}__${ccy}__${isin || "NOISIN"}`;
