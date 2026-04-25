@@ -535,9 +535,11 @@ async function applyPortfolioSharedFromHash(sp) {
         ban.hidden = false;
         const when = ua ? ` · snapshot ${esc(String(ua))}` : "";
         ban.className = "card2 mt migrateBanner";
-        ban.innerHTML = `<p class="sml"><strong>Family view (read-only)</strong> — data from the server${when}. This is not your private browser copy. <a class="backLink" href="#/portfolio">Open normal portfolio</a> (this device only).</p>`;
+        ban.innerHTML = `<p class="sml"><strong>Family view (read-only)</strong> — data from the server${when}. Use the buttons below for latest market prices. <a class="backLink" href="#/portfolio">Open normal portfolio</a> (this device only).</p>`;
       }
       if (manage instanceof HTMLElement) manage.hidden = true;
+      const ft = $("pfFamilyTools");
+      if (ft instanceof HTMLElement) ft.hidden = false;
       return;
     }
     if (ban instanceof HTMLElement) {
@@ -546,6 +548,8 @@ async function applyPortfolioSharedFromHash(sp) {
       ban.innerHTML = `<p class="sml"><strong>Could not load family snapshot.</strong> The owner may not have published yet, or the read token in the URL does not match the server. Check <a href="/api/health" target="_blank" rel="noopener">/api/health</a> → <code>shared_family_portfolio</code>.</p>`;
     }
     if (manage instanceof HTMLElement) manage.hidden = false;
+    const ft = $("pfFamilyTools");
+    if (ft instanceof HTMLElement) ft.hidden = true;
     return;
   }
   _pfSharedBundle = null;
@@ -555,6 +559,8 @@ async function applyPortfolioSharedFromHash(sp) {
     ban.className = "card2 mt";
   }
   if (manage instanceof HTMLElement) manage.hidden = false;
+  const ftx = $("pfFamilyTools");
+  if (ftx instanceof HTMLElement) ftx.hidden = true;
 }
 
 async function publishPortfolioToServer() {
@@ -585,6 +591,48 @@ async function publishPortfolioToServer() {
   } catch (e) {
     status(e instanceof Error ? e.message : String(e));
   }
+}
+
+/** Read-only family link: re-fetch /api/quote for every row (no owner needed). */
+async function familyRefreshAllMarketPrices() {
+  if (!_pfSharedBundle) {
+    status("Not in family view");
+    return;
+  }
+  const bundle = JSON.parse(JSON.stringify(_pfSharedBundle));
+  let n = 0;
+  for (const id of PF_BROKER_IDS) {
+    const rows = bundle.brokers[id]?.rows;
+    if (!Array.isArray(rows) || !rows.length) continue;
+    status(`Prices: ${PF_BROKER_LABEL[id] || id}…`);
+    n += await applyLiveQuotesToRowsForBroker(bundle, id);
+  }
+  _pfSharedBundle = JSON.parse(JSON.stringify(bundle));
+  renderPf();
+  status(n > 0 ? `Market prices updated (${n} quote run(s))` : "Market prices — no symbols updated (check API keys if empty)");
+}
+
+/** Re-download the last snapshot the owner published (same token as in the URL). */
+async function familyReloadOwnerSnapshot() {
+  if (!_pfSharedBundle) {
+    status("Not in family view");
+    return;
+  }
+  const { sp } = parseLocationHash();
+  const tok = (sp.get("token") || "").trim();
+  if (!tok) {
+    status("Missing token in link");
+    return;
+  }
+  status("Reloading owner snapshot…");
+  const { ok, updated_at: ua } = await fetchSharedFamilyPortfolio(tok);
+  if (!ok) {
+    status("Could not reload — check link or ask the owner to publish again");
+    return;
+  }
+  renderPf();
+  const when = ua ? ` · ${ua}` : "";
+  status(`Owner snapshot reloaded${when}`);
 }
 
 function getActiveBroker() {
@@ -1427,6 +1475,13 @@ function portfolioHtml() {
     ${banner}
     <h1 class="h1">Portfolio</h1>
     <div id="pfSharedBanner" class="card2 mt" hidden aria-live="polite"></div>
+    <div id="pfFamilyTools" class="card2 mt" hidden role="region" aria-label="Family read-only actions">
+      <p class="sml muted" style="margin:0 0 8px 0">You can update <strong>market prices</strong> and reload the <strong>owner’s last published</strong> snapshot without editing anything.</p>
+      <div class="rowgap" style="display:flex;flex-wrap:wrap;gap:10px;">
+        <button type="button" class="btn" id="btnFamilyRefPx">Refresh market prices</button>
+        <button type="button" class="btn ghost" id="btnFamilySnap">Reload owner snapshot</button>
+      </div>
+    </div>
     <div class="pfTopSummary" aria-label="Total and breakdown in euro">
       <div id="pfGrandTotalMount" class="pfGrandTotalMount" aria-live="polite" hidden></div>
       <div id="pfCombinedEur" class="mt" hidden></div>
@@ -1779,6 +1834,8 @@ function wire() {
       }
     });
     $("btnRef")?.addEventListener("click", refreshPf);
+    $("btnFamilyRefPx")?.addEventListener("click", () => void familyRefreshAllMarketPrices());
+    $("btnFamilySnap")?.addEventListener("click", () => void familyReloadOwnerSnapshot());
     $("btnPfExport")?.addEventListener("click", () => exportPfCsv());
     $("btnPfJsonExport")?.addEventListener("click", () => exportPfBackupJson());
     $("btnPfJsonRestore")?.addEventListener("click", () => {
