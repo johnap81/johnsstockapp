@@ -647,7 +647,6 @@ async function ownerPushToServer() {
   const wk = getOwnerCloudWriteK();
   if (!wk) return;
   const bundle = loadPfBundle();
-  const st = $("pfOwnerCloudSt");
   try {
     const r = await fetch("/api/shared/portfolio", {
       method: "PUT",
@@ -656,32 +655,55 @@ async function ownerPushToServer() {
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) {
-      if (st instanceof HTMLElement) st.textContent = String(j.detail || j.error || `HTTP ${r.status}`);
+      status(String(j.detail || j.error || `HTTP ${r.status}`), document.documentElement.dataset.theme || "");
       return;
     }
-    if (st instanceof HTMLElement) st.textContent = `Server saved · ${j.updated_at || "ok"}`;
+    /* quiet success to avoid status-bar noise on every debounced auto-save */
   } catch (e) {
-    if (st instanceof HTMLElement) st.textContent = e instanceof Error ? e.message : String(e);
+    status(e instanceof Error ? e.message : String(e), document.documentElement.dataset.theme || "");
   }
 }
 
-function initOwnerCloudForm() {
-  let on = false;
-  let r = "";
-  let w = "";
+/**
+ * One-time: open `#/portfolio?setupOwner=1&r=READ&w=WRITE` (use encodeURIComponent) to store
+ * tokens in this browser and show a clean URL. There is no settings form in the app.
+ * @returns {true} if the URL was consumed and route() should re-run
+ */
+function tryConsumeOwnerSetupFromHash() {
+  const { pathname, sp } = parseLocationHash();
+  if (pathname !== "/portfolio") return false;
+  if (String(sp.get("setupOwner") || "").trim() !== "1") return false;
+  const rParam = sp.get("r");
+  const wParam = sp.get("w");
+  if (rParam == null || wParam == null) return false;
+  let r = String(rParam).trim();
+  let w = String(wParam).trim();
   try {
-    on = localStorage.getItem(K.pfOwnerCloud) === "1";
-    r = (localStorage.getItem(K.pfOwnerCloudRead) || "").trim();
-    w = (localStorage.getItem(K.pfOwnerCloudWrite) || "").trim();
+    r = decodeURIComponent(r);
+  } catch {
+    /* keep */
+  }
+  try {
+    w = decodeURIComponent(w);
+  } catch {
+    /* keep */
+  }
+  r = cleanHashParam(r).trim();
+  w = cleanHashParam(w).trim();
+  if (!r || !w) return false;
+  try {
+    localStorage.setItem(K.pfOwnerCloud, "1");
+    localStorage.setItem(K.pfOwnerCloudRead, r);
+    localStorage.setItem(K.pfOwnerCloudWrite, w);
+  } catch {
+    return false;
+  }
+  try {
+    history.replaceState(null, "", `${location.pathname}${location.search}#/portfolio`);
   } catch {
     /* ignore */
   }
-  const c = /** @type {HTMLInputElement | null} */ (document.getElementById("pfCloudOn"));
-  const iR = /** @type {HTMLInputElement | null} */ (document.getElementById("pfCloudRead"));
-  const iW = /** @type {HTMLInputElement | null} */ (document.getElementById("pfCloudWrite"));
-  if (c) c.checked = on;
-  if (iR) iR.value = r;
-  if (iW) iW.value = w;
+  return true;
 }
 
 function savePfBundle(bundle) {
@@ -1690,6 +1712,10 @@ function paintGlobalApiBanner(el, j, fetchOk) {
 
 function route() {
   migrateLegacyPortfolioFromV1();
+  if (tryConsumeOwnerSetupFromHash()) {
+    route();
+    return;
+  }
   const { pathname, sp } = parseLocationHash();
   if (!pathname.startsWith("/portfolio") && _pfSharedBundle != null) {
     _pfSharedBundle = null;
@@ -1872,32 +1898,6 @@ function portfolioHtml() {
         <button type="button" class="btn" id="btnFamilyRefPx">Refresh market prices</button>
         <button type="button" class="btn ghost" id="btnFamilySnap">Reload owner snapshot</button>
       </div>
-    </div>
-    <div id="pfOwnerCloudWrap" class="card2 mt" role="region" aria-labelledby="pfOwnerCloudHd">
-      <h2 class="h2" id="pfOwnerCloudHd">All your devices (server copy)</h2>
-      <p class="sml muted" style="margin:0 0 10px;line-height:1.5">
-        Keep one portfolio in the <strong>same</strong> place the server uses for the <strong>family</strong> read-only link. After you set your Render
-        <code>SHARED_PORTFOLIO_READ_TOKEN</code> and <code>SHARED_PORTFOLIO_WRITE_TOKEN</code> here, this app can
-        <strong>load on open</strong> and <strong>save when you change something</strong> (also use <strong>GitHub Gist</strong> on Render so data survives free-tier restarts). Family still opens only the read link; they do not get your write key.
-      </p>
-      <label class="lbl" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;max-width:40rem">
-        <input type="checkbox" id="pfCloudOn" />
-        <span>Enable: load from server when I open Portfolio, save to server when I change something on this device</span>
-      </label>
-      <div class="pfAddRowGrid mt" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));max-width:40rem;gap:10px 14px;align-items:end">
-        <label class="lbl">Read token
-          <input class="in" type="password" id="pfCloudRead" autocomplete="off" inputmode="text" placeholder="= READ_TOKEN in Render" />
-        </label>
-        <label class="lbl">Write key
-          <input class="in" type="password" id="pfCloudWrite" autocomplete="off" inputmode="text" placeholder="= WRITE_TOKEN in Render" />
-        </label>
-      </div>
-      <div class="rowgap mt" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
-        <button type="button" class="btn" id="btnPfCloudSave">Save keys &amp; setting</button>
-        <button type="button" class="btn ghost" id="btnPfCloudPull">Pull from server now</button>
-        <button type="button" class="btn ghost" id="btnPfCloudPush">Push to server now</button>
-      </div>
-      <p class="sml" id="pfOwnerCloudSt" style="margin:8px 0 0" role="status" aria-live="polite"></p>
     </div>
     <div class="pfTopSummary" aria-label="Total and breakdown in euro">
       <div id="pfGrandTotalMount" class="pfGrandTotalMount" aria-live="polite" hidden></div>
@@ -2302,79 +2302,24 @@ function wire() {
     $("btnPfPublish")?.addEventListener("click", () => {
       void publishPortfolioToServer();
     });
-    $("btnPfCloudSave")?.addEventListener("click", () => {
-      const on = /** @type {HTMLInputElement | null} */ (document.getElementById("pfCloudOn"));
-      const iR = /** @type {HTMLInputElement | null} */ (document.getElementById("pfCloudRead"));
-      const iW = /** @type {HTMLInputElement | null} */ (document.getElementById("pfCloudWrite"));
-      const st = /** @type {HTMLElement | null} */ (document.getElementById("pfOwnerCloudSt"));
-      const readT = iR?.value.trim() || "";
-      const writeK = iW?.value.trim() || "";
-      if (on?.checked && (!readT || !writeK)) {
-        if (st) st.textContent = "Enable requires both read token and write key (must match Render).";
-        return;
-      }
-      try {
-        if (on?.checked) {
-          localStorage.setItem(K.pfOwnerCloud, "1");
-          localStorage.setItem(K.pfOwnerCloudRead, readT);
-          localStorage.setItem(K.pfOwnerCloudWrite, writeK);
-        } else {
-          localStorage.setItem(K.pfOwnerCloud, "0");
-          if (readT) localStorage.setItem(K.pfOwnerCloudRead, readT);
-          if (writeK) localStorage.setItem(K.pfOwnerCloudWrite, writeK);
-        }
-      } catch {
-        if (st) st.textContent = "Could not save in this browser (storage blocked or full).";
-        return;
-      }
-      if (st) st.textContent = "Saved. With sync on, the next time you open Portfolio we load from the server. Use Pull now to load immediately.";
-    });
-    $("btnPfCloudPull")?.addEventListener("click", () => {
-      void (async () => {
-        const st = /** @type {HTMLElement | null} */ (document.getElementById("pfOwnerCloudSt"));
-        if (st) st.textContent = "Loading from server…";
-        const ok = await ownerPullFromServer();
-        if (st) {
-          st.textContent = ok
-            ? "Loaded. Totals and tables updated below."
-            : "Failed — set read token (from Render) or ask owner to publish / check Gist.";
-        }
-        if (ok) {
-          renderPf();
-          void refreshGlobalApiBanner();
-        }
-      })();
-    });
-    $("btnPfCloudPush")?.addEventListener("click", () => {
-      void (async () => {
-        const st = /** @type {HTMLElement | null} */ (document.getElementById("pfOwnerCloudSt"));
-        if (st) st.textContent = "Pushing to server…";
-        await ownerPushToServer();
-        void refreshGlobalApiBanner();
-      })();
-    });
     bindPfPortfolioViewOnce();
     setActiveBroker(getActiveBroker());
     void (async () => {
       await applyPortfolioSharedFromHash(sp);
-      const ocw = /** @type {HTMLElement | null} */ (document.getElementById("pfOwnerCloudWrap"));
-      if (ocw) ocw.hidden = _pfSharedBundle != null;
-      if (_pfSharedBundle == null) {
-        initOwnerCloudForm();
-        if (isOwnerCloudSyncActive()) {
-          status("Loading from server…", document.documentElement.dataset.theme || "");
-          const ok = await ownerPullFromServer();
-          const stc = /** @type {HTMLElement | null} */ (document.getElementById("pfOwnerCloudSt"));
-          if (stc) stc.textContent = ok ? "Loaded from server." : "Server load failed — set tokens above or use Pull from server now.";
+      const th = document.documentElement.dataset.theme || "";
+      if (_pfSharedBundle == null && isOwnerCloudSyncActive()) {
+        status("Loading from server…", th);
+        const ok = await ownerPullFromServer();
+        if (!ok) {
+          status("Could not load server copy. Open your one-time device link again (see .env.example).", th);
+        } else {
+          status("Portfolio", th);
         }
+      } else {
+        status("Portfolio", th);
       }
       renderPf();
       updateFamilyNavHrefs();
-      if (_pfSharedBundle == null && isOwnerCloudSyncActive()) {
-        status("Portfolio (server sync on)", document.documentElement.dataset.theme || "");
-      } else {
-        status("Portfolio", document.documentElement.dataset.theme || "");
-      }
     })();
     return;
   }
@@ -5418,7 +5363,7 @@ function portfolioLedgerEmptyHintHtml() {
   if (isFamilyUrl) {
     return `<p class="sml muted pfEmptyLedgerHint mt">If you expected holdings here, confirm you’re using the <strong>exact</strong> family link (with <code>view=family</code> and <code>token=…</code>) and that the owner has published. A normal <code>#/portfolio</code> link has no data in a private / new browser.</p>`;
   }
-  return `<div class="card2 mt pfEmptyLedgerHint" role="note"><p class="sml" style="margin:0;line-height:1.55;max-width:42rem">Your portfolio in this app is stored in <strong>this browser only</strong> (not on the server) by default. A <strong>private / incognito</strong> window, or another device, starts with an <strong>empty</strong> ledger — that is why you see no totals or rows.</p><p class="sml muted mt" style="margin:0 0 0 0;line-height:1.55;max-width:42rem">To use the <strong>same</strong> portfolio on every device (owner), enable <strong>All your devices (server copy)</strong> on Portfolio and add your read/write tokens from Render. <strong>Family</strong> (read-only) still uses only the <code>view=family</code> + <code>token=…</code> link.</p></div>`;
+  return `<div class="card2 mt pfEmptyLedgerHint" role="note"><p class="sml" style="margin:0;line-height:1.55;max-width:42rem">If you see an empty ledger on a new device, you may not have <strong>linked that device to the server copy</strong> yet, or this is a <strong>private / incognito</strong> window. <strong>Family</strong> read-only users should open the full <code>view=family</code> + <code>token=…</code> link from the owner.</p></div>`;
 }
 
 /* portfolio table (uses `loadPfBundle` + active broker) */
