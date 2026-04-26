@@ -646,7 +646,7 @@ function hrefPortfolio() {
   try {
     const { sp } = parseLocationHash();
     if ((sp.get("view") || "").trim().toLowerCase() === "family") {
-      const u = (sp.get("token") || "").trim();
+      const u = familyReadTokenFromUrl(sp);
       if (u) return familyReadOnlyPortfolioHref(u);
     }
   } catch {
@@ -672,7 +672,7 @@ function updateFamilyNavHrefs() {
   a.href = hrefPortfolio();
 }
 
-/** @returns {Promise<{ ok: boolean, updated_at?: string }>} */
+/** @returns {Promise<{ ok: boolean, updated_at?: string, detail?: string, err?: string, status?: number }>} */
 async function fetchSharedFamilyPortfolio(readToken) {
   _pfSharedBundle = null;
   const t = String(readToken || "").trim();
@@ -681,15 +681,20 @@ async function fetchSharedFamilyPortfolio(readToken) {
     const r = await fetch(`/api/shared/portfolio?token=${encodeURIComponent(t)}`, { cache: "no-store" });
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !j.ok || !j.bundle || typeof j.bundle !== "object") {
-      return { ok: false };
+      return {
+        ok: false,
+        detail: typeof j.detail === "string" ? j.detail : "",
+        err: String(j.error || ""),
+        status: r.status,
+      };
     }
     const b = j.bundle;
-    if (b.v !== 2 || !b.brokers) return { ok: false };
+    if (b.v !== 2 || !b.brokers) return { ok: false, err: "invalid bundle shape" };
     _pfSharedBundle = JSON.parse(JSON.stringify(b));
     return { ok: true, updated_at: typeof j.updated_at === "string" ? j.updated_at : undefined };
   } catch {
     _pfSharedBundle = null;
-    return { ok: false };
+    return { ok: false, err: "network" };
   }
 }
 
@@ -717,7 +722,7 @@ async function applyPortfolioSharedFromHash(sp) {
     updateFamilyNavHrefs();
     return;
   }
-  const tokInUrl = (sp.get("token") || "").trim();
+  const tokInUrl = familyReadTokenFromUrl(sp);
   let tok = tokInUrl;
   if (!tok) {
     if (isFamilySessionPairActive() && isLocalPfStorageEmpty()) {
@@ -731,7 +736,7 @@ async function applyPortfolioSharedFromHash(sp) {
   const canResumeFromSession = !tokInUrl && isFamilySessionPairActive() && isLocalPfStorageEmpty();
   const wantsFamily = Boolean(tok) && (view === "family" || canResumeFromSession);
   if (wantsFamily) {
-    const { ok, updated_at: ua } = await fetchSharedFamilyPortfolio(tok);
+    const { ok, updated_at: ua, detail, err, status: httpSt } = await fetchSharedFamilyPortfolio(tok);
     if (ok) {
       try {
         sessionStorage.setItem(K.pfFamilyRead, tok);
@@ -754,7 +759,15 @@ async function applyPortfolioSharedFromHash(sp) {
     if (ban instanceof HTMLElement) {
       ban.hidden = false;
       ban.className = "card2 mt globalApiBannerErr";
-      ban.innerHTML = `<p class="sml"><strong>Could not load family snapshot.</strong> The owner may not have published yet, or the read token in the URL does not match the server. Check <a href="/api/health" target="_blank" rel="noopener">/api/health</a> → <code>shared_family_portfolio</code>.</p>`;
+      const hint =
+        detail || err
+          ? `<br/><span class="sml">${esc(detail || err || "")}</span>${
+              httpSt === 404
+                ? ` <span class="sml">On <strong>Render free</strong>, a snapshot saved only to disk can disappear when the app sleeps. Ask the owner to set <strong>GitHub Gist</strong> storage and publish again (see <code>/.env.example</code>).</span>`
+                : ""
+            }`
+          : "";
+      ban.innerHTML = `<p class="sml"><strong>Could not load family snapshot.</strong> Check the read token, or the owner may need to publish again. <a href="/api/health" target="_blank" rel="noopener">/api/health</a> → <code>shared_family_portfolio</code>.${hint}</p>`;
     }
     if (manage instanceof HTMLElement) manage.hidden = false;
     const ftb = $("pfFamilyTools");
@@ -796,6 +809,21 @@ async function publishPortfolioToServer() {
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) {
+      const err = String(j.error || "");
+      if (r.status === 403 && (err === "forbidden" || !j.detail)) {
+        status(
+          "Publish failed: write key rejected. Paste SHARED_PORTFOLIO_WRITE_TOKEN from Render exactly (this is not the read token; no extra spaces).",
+        );
+        return;
+      }
+      if (r.status === 503 && (err === "publish_not_configured" || j.detail)) {
+        status(
+          String(
+            j.detail || "Set SHARED_PORTFOLIO_WRITE_TOKEN in Render, redeploy, then try again.",
+          ),
+        );
+        return;
+      }
       status(String(j.detail || j.error || `HTTP ${r.status}`));
       return;
     }
@@ -831,7 +859,7 @@ async function familyReloadOwnerSnapshot() {
     return;
   }
   const { sp } = parseLocationHash();
-  let tok = (sp.get("token") || "").trim();
+  let tok = familyReadTokenFromUrl(sp);
   if (!tok) {
     try {
       tok = (sessionStorage.getItem(K.pfFamilyRead) || "").trim();
@@ -1094,6 +1122,23 @@ function cleanHashParam(s) {
     x = x.slice(1, -1).trim();
   }
   return x;
+}
+
+/**
+ * `token=…` in the location hash. Decode safely (e.g. `%40` for @) and strip quotes from spreadsheets.
+ * @param {URLSearchParams} sp
+ * @returns {string}
+ */
+function familyReadTokenFromUrl(sp) {
+  const raw = sp.get("token");
+  if (raw == null) return "";
+  let x = String(raw).trim();
+  try {
+    x = decodeURIComponent(x);
+  } catch {
+    /* keep */
+  }
+  return cleanHashParam(x).trim();
 }
 
 /** Hash link to the instrument workspace (do not wrap in `esc()` — that breaks `&` / `"` in the URL). */
@@ -5150,7 +5195,7 @@ function portfolioLedgerEmptyHintHtml() {
   try {
     const { sp } = parseLocationHash();
     const v = (sp.get("view") || "").trim().toLowerCase();
-    const tok = (sp.get("token") || "").trim();
+    const tok = familyReadTokenFromUrl(sp);
     isFamilyUrl = v === "family" && Boolean(tok);
   } catch {
     /* ignore */

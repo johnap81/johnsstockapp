@@ -3507,7 +3507,19 @@ class Handler(SimpleHTTPRequestHandler):
             read_tok = bool((env("SHARED_PORTFOLIO_READ_TOKEN", "") or "").strip())
             write_tok = bool((env("SHARED_PORTFOLIO_WRITE_TOKEN", "") or "").strip())
             snap_path = _shared_portfolio_file_path()
-            has_snap = os.path.isfile(snap_path)
+            uses_gist = _shared_portfolio_uses_gist()
+            if uses_gist:
+                try:
+                    gdata = _load_shared_portfolio_from_gist()
+                except OSError:  # noqa: BLE001
+                    gdata = None
+                has_snap = bool(
+                    gdata
+                    and gdata.get("v") == 2
+                    and isinstance(gdata.get("brokers"), dict)
+                )
+            else:
+                has_snap = os.path.isfile(snap_path)
             t212_cache: dict = {}
             if t212:
                 with T212I_LOCK:
@@ -3578,8 +3590,11 @@ class Handler(SimpleHTTPRequestHandler):
                         "read_token_configured": read_tok,
                         "write_token_configured": write_tok,
                         "snapshot_on_disk": has_snap,
+                        "storage": "github_gist" if uses_gist else "local_file",
+                        "gist_configured": uses_gist,
+                        "render_free_ephemeral_warning": _render_env_hint() and not uses_gist,
                     },
-                    "api_revision": 18,
+                    "api_revision": 19,
                 },
             )
 
@@ -3823,6 +3838,92 @@ class Handler(SimpleHTTPRequestHandler):
 
 # --- Shared family portfolio (read-only link) — server snapshot; not the same as per-browser localStorage. ---
 _SHARED_PF_LOCK = threading.Lock()
+# Durable free-tier storage: a private GitHub Gist (stdlib HTTP). Renders' free disk is ephemeral; file_path alone loses data.
+SHARED_GIST_FILENAME = "shared_portfolio.json"
+
+
+def _shared_portfolio_uses_gist() -> bool:
+    return bool((env("GITHUB_PAT", "") or "").strip() and (env("GITHUB_GIST_ID", "") or "").strip())
+
+
+def _render_env_hint() -> bool:
+    return bool(
+        (str(os.environ.get("RENDER", "") or "").strip().lower() in ("1", "true", "yes"))
+        or (str(os.environ.get("RENDER_SERVICE_ID", "") or "").strip() != "")
+    )
+
+
+def _github_gist_request(method: str, url: str, pat: str, body: bytes | None, content_type: str) -> tuple[int, bytes]:
+    req = Request(
+        url,
+        data=body,
+        method=method,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"token {pat}",
+            "User-Agent": "JohnsStockApp-server/1",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": content_type,
+        },
+    )
+    try:
+        with urlopen(req, timeout=55) as r:
+            return r.status, r.read()
+    except HTTPError as e:
+        return e.code, (e.read() if e.fp else b"") or b""
+
+
+def _load_shared_portfolio_from_gist() -> dict | None:
+    gid = (env("GITHUB_GIST_ID", "") or "").strip()
+    pat = (env("GITHUB_PAT", "") or "").strip()
+    if not gid or not pat:
+        return None
+    code, raw = _github_gist_request("GET", f"https://api.github.com/gists/{gid}", pat, None, "application/json")
+    if code != 200:
+        return None
+    try:
+        meta = json.loads(raw.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+    files = meta.get("files") if isinstance(meta, dict) else None
+    if not isinstance(files, dict) or not files:
+        return None
+    fobj: dict | None = None
+    if isinstance(files.get(SHARED_GIST_FILENAME), dict):
+        fobj = files[SHARED_GIST_FILENAME]
+    else:
+        for _fn, f in files.items():
+            if isinstance(f, dict) and "content" in f and str(_fn).endswith(".json"):
+                fobj = f
+                break
+    if not isinstance(fobj, dict):
+        return None
+    content = fobj.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _save_shared_portfolio_to_gist(data: dict) -> None:
+    gid = (env("GITHUB_GIST_ID", "") or "").strip()
+    pat = (env("GITHUB_PAT", "") or "").strip()
+    if not gid or not pat:
+        raise OSError("gist not configured (GITHUB_PAT and GITHUB_GIST_ID required)")
+    content = json.dumps(data, ensure_ascii=False, indent=0)
+    if len(content.encode("utf-8")) > 950_000:
+        raise OSError("Portfolio JSON is too large for a GitHub Gist (max ~1 MB). Export fewer ledgers or split data.")
+    payload = json.dumps(
+        {"files": {SHARED_GIST_FILENAME: {"content": content}}},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    code, rbody = _github_gist_request("PATCH", f"https://api.github.com/gists/{gid}", pat, payload, "application/json; charset=utf-8")
+    if code not in (200, 201):
+        err_txt = rbody.decode("utf-8", errors="replace")[:700]
+        raise OSError(f"GitHub Gist update failed: HTTP {code} — {err_txt}")
 
 
 def _shared_portfolio_file_path() -> str:
@@ -3847,27 +3948,41 @@ def handle_get_shared_portfolio(handler: SimpleHTTPRequestHandler, qs: dict[str,
     got = (qs.get("token", [""])[0] or qs.get("read", [""])[0] or "").strip()
     if not got or got != want:
         return json_response(handler, 403, {"ok": False, "error": "forbidden"})
-    path = _shared_portfolio_file_path()
+    data: dict | None
     with _SHARED_PF_LOCK:
-        if not os.path.isfile(path):
-            return json_response(
-                handler,
-                404,
-                {
-                    "ok": False,
-                    "error": "not_published",
-                    "detail": "Owner has not published a snapshot yet (PUT /api/shared/portfolio with write key).",
-                },
-            )
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as e:  # noqa: BLE001
-            return json_response(
-                handler,
-                500,
-                {"ok": False, "error": "read_failed", "detail": redact_for_json_detail(str(e))[:400]},
-            )
+        if _shared_portfolio_uses_gist():
+            data = _load_shared_portfolio_from_gist()
+        else:
+            path = _shared_portfolio_file_path()
+            if not os.path.isfile(path):
+                return json_response(
+                    handler,
+                    404,
+                    {
+                        "ok": False,
+                        "error": "not_published",
+                        "detail": "No snapshot on server (owner has not published, or Render cleared the file). Configure GITHUB_PAT+GITHUB_GIST_ID for durable storage, then publish again.",
+                    },
+                )
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception as e:  # noqa: BLE001
+                return json_response(
+                    handler,
+                    500,
+                    {"ok": False, "error": "read_failed", "detail": redact_for_json_detail(str(e))[:400]},
+                )
+    if not data:
+        return json_response(
+            handler,
+            404,
+            {
+                "ok": False,
+                "error": "not_published",
+                "detail": "Owner has not published yet, or the Gist is empty. Publish from Portfolio again.",
+            },
+        )
     if not isinstance(data, dict) or data.get("v") != 2 or not isinstance(data.get("brokers"), dict):
         return json_response(
             handler,
@@ -3922,24 +4037,40 @@ def handle_put_shared_portfolio(handler: SimpleHTTPRequestHandler) -> None:
     body.pop("_meta", None)
     body["_meta"] = {
         "updated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-        "source": "PUT /api/shared/portfolio",
+        "source": "PUT /api/shared/portfolio" + (" (GitHub Gist)" if _shared_portfolio_uses_gist() else ""),
     }
-    path = _shared_portfolio_file_path()
-    ddir = os.path.dirname(path)
-    try:
-        os.makedirs(ddir, exist_ok=True)
-    except OSError as e:
-        return json_response(
-            handler,
-            500,
-            {"ok": False, "error": "mkdir_failed", "detail": str(e)[:200]},
-        )
-    tmp = path + ".tmp"
-    payload = json.dumps(body, ensure_ascii=False, indent=0).encode("utf-8")
     with _SHARED_PF_LOCK:
-        with open(tmp, "wb") as f:
-            f.write(payload)
-        os.replace(tmp, path)
+        if _shared_portfolio_uses_gist():
+            try:
+                _save_shared_portfolio_to_gist(body)
+            except OSError as e:  # noqa: BLE001
+                return json_response(
+                    handler,
+                    500,
+                    {
+                        "ok": False,
+                        "error": "gist_write_failed",
+                        "detail": redact_for_json_detail(str(e))[:500],
+                    },
+                )
+            payload = json.dumps(body, ensure_ascii=False, indent=0).encode("utf-8")
+            ddir = "github:gist"
+        else:
+            path = _shared_portfolio_file_path()
+            ddir = os.path.dirname(path)
+            try:
+                os.makedirs(ddir, exist_ok=True)
+            except OSError as e:
+                return json_response(
+                    handler,
+                    500,
+                    {"ok": False, "error": "mkdir_failed", "detail": str(e)[:200]},
+                )
+            tmp = path + ".tmp"
+            payload = json.dumps(body, ensure_ascii=False, indent=0).encode("utf-8")
+            with open(tmp, "wb") as f:
+                f.write(payload)
+            os.replace(tmp, path)
     return json_response(
         handler,
         200,
@@ -3990,7 +4121,7 @@ def main() -> int:
         f"lsof -iTCP:{port} -sTCP:LISTEN  then kill that PID, and start this server again. GET /api/ai-commentary avoids POST.",
         flush=True,
     )
-    print("Health check: GET /api/health  →  expect api_revision: 18, llm_commentary, shared_family_portfolio.", flush=True)
+    print("Health check: GET /api/health  →  expect api_revision: 19, llm_commentary, shared_family_portfolio.", flush=True)
     t212_instruments_warmer_start(from_boot=True)
     try:
         httpd.serve_forever()
