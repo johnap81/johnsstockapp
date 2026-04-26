@@ -1369,6 +1369,9 @@ function paintGlobalApiBanner(el, j, fetchOk) {
 function route() {
   migrateLegacyPortfolioFromV1();
   const { pathname, sp } = parseLocationHash();
+  if (!pathname.startsWith("/portfolio") && _pfSharedBundle != null) {
+    _pfSharedBundle = null;
+  }
   document.querySelectorAll("[data-route]").forEach((a) => {
     if (!(a instanceof HTMLAnchorElement)) return;
     const href = a.getAttribute("href") || "";

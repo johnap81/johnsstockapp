@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-build="2.55">
+<html lang="en" data-build="2.56">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -11,7 +11,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.svg" />
-    <link rel="stylesheet" href="/styles.css?v=2.55" />
+    <link rel="stylesheet" href="/styles.css?v=2.56" />
     <title>John’sStockApp</title>
   </head>
   <body>
@@ -19,11 +19,20 @@
       <header class="siteHead">
         <div class="bar">
           <div class="brand">
-            <span class="logo" aria-hidden="true"></span>
-            <div>
-              <div class="title">John’sStockApp</div>
-              <div class="sub">Search · Quote · Watchlist · Portfolio</div>
-            </div>
+            <a class="brandHome" href="#/search" aria-label="John’sStockApp — home (Search)">
+              <img
+                class="logo"
+                src="/icons/logo-bull-bear.svg?v=2.56"
+                width="36"
+                height="36"
+                alt=""
+                decoding="async"
+              />
+              <div class="brandText">
+                <div class="title">John’sStockApp</div>
+                <div class="sub">Search · Quote · Watchlist · Portfolio</div>
+              </div>
+            </a>
           </div>
           <nav class="nav" aria-label="Main">
             <a class="navlink" href="#/search" data-route>Search</a>
@@ -52,7 +61,7 @@
       </main>
 
       <footer class="foot">
-        <span>v2.55</span>
+        <span>v2.56</span>
         <span class="footLinks">
           <a href="/mobile.html">Phone (same Wi-Fi)</a>
           <a href="/README.html#checklist-daily">Run checklist</a>
@@ -62,6 +71,6 @@
         </span>
       </footer>
     </div>
-    <script type="module" src="/app.js?v=2.55"></script>
+    <script type="module" src="/app.js?v=2.56"></script>
   </body>
 </html>

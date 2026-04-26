@@ -92,11 +92,36 @@ body {
   gap: 10px;
   min-width: 0;
 }
+.brandHome {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  text-decoration: none;
+  color: inherit;
+  border-radius: 12px;
+  padding: 2px 6px 2px 2px;
+  margin: -2px -6px -2px -2px;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+.brandHome:hover {
+  background: color-mix(in srgb, var(--a2) 10%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--a2) 25%, var(--bd));
+}
+.brandHome:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--a) 60%, var(--bd));
+  outline-offset: 2px;
+}
+.brandText {
+  min-width: 0;
+}
 .logo {
   width: 36px;
   height: 36px;
   border-radius: 10px;
-  background: linear-gradient(135deg, var(--a) 0%, var(--a4) 45%, var(--a2) 78%, var(--a3) 100%);
+  flex-shrink: 0;
+  display: block;
+  object-fit: cover;
   box-shadow: 0 2px 12px color-mix(in srgb, var(--a2) 25%, transparent);
 }
 .title {
