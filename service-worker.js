@@ -1,6 +1,6 @@
 /* eslint-disable no-restricted-globals */
 /** Bump when shipping UI/logic changes — old caches are deleted on activate. */
-const CACHE = "jsa-v38";
+const CACHE = "jsa-v39";
 
 /** These files must not be served stale from precache (otherwise tabs/charts vanish until cache clears). */
 const NETWORK_FIRST_PATHS = new Set(["/app.js", "/styles.css"]);

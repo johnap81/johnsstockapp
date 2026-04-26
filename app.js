@@ -23,6 +23,8 @@ const K = {
   pfOwnerCloud: "jsa.pf.ownerCloud1",
   pfOwnerCloudRead: "jsa.pf.ownerCloudReadT",
   pfOwnerCloudWrite: "jsa.pf.ownerCloudWriteK",
+  /** Shown on Portfolio once when a one-time owner link could not be saved to localStorage. */
+  ownerStorageFail: "jsa.pf.ownerStorageFail1",
 };
 /** Last successful search query — restored when returning from an instrument (`#/search`). */
 const SEARCH_LAST_Q = "jsa.search.lastQ";
@@ -610,18 +612,40 @@ function scheduleOwnerCloudPush() {
 
 /**
  * Fetches the published snapshot and replaces this browser’s portfolio (localStorage).
- * @returns {Promise<boolean>}
+ * @returns {Promise<{ ok: true } | { ok: false; reason: string; http?: number; code?: string; detail?: string }>}
  */
 async function ownerPullFromServer() {
-  if (_pfSharedBundle != null) return false;
+  if (_pfSharedBundle != null) {
+    return { ok: false, reason: "family_read_only" };
+  }
   const rt = getOwnerCloudReadT();
-  if (!rt) return false;
+  if (!rt) {
+    return { ok: false, reason: "no_read_token" };
+  }
   try {
     const r = await fetch(`/api/shared/portfolio?token=${encodeURIComponent(rt)}`, { cache: "no-store" });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok || !j.ok || !j.bundle || typeof j.bundle !== "object") return false;
+    if (!r.ok || !j.ok || !j.bundle || typeof j.bundle !== "object") {
+      return {
+        ok: false,
+        reason: "server",
+        http: r.status,
+        code: typeof j.error === "string" ? j.error : "",
+        detail: String(
+          (typeof j.detail === "string" && j.detail) || (typeof j.error === "string" && j.error) || (r.status === 403
+            ? "read token not accepted (must match SHARED_PORTFOLIO_READ_TOKEN on the server)"
+            : r.status === 404
+              ? "no published snapshot or empty storage"
+              : r.status === 503
+                ? "shared read token not configured on server"
+                : `HTTP ${r.status}`),
+        ).slice(0, 500),
+      };
+    }
     const b = j.bundle;
-    if (b.v !== 2 || !b.brokers) return false;
+    if (b.v !== 2 || !b.brokers) {
+      return { ok: false, reason: "bad_bundle", detail: "server bundle is not v2" };
+    }
     const full = { v: 2, brokers: b.brokers };
     if (typeof j.updated_at === "string" && j.updated_at) {
       full._meta = { source: "server", updated_at: j.updated_at };
@@ -631,11 +655,11 @@ async function ownerPullFromServer() {
     try {
       localStorage.setItem(K.pf, JSON.stringify(full));
     } catch {
-      return false;
+      return { ok: false, reason: "local_storage" };
     }
-    return true;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: "network", detail: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
   }
 }
 
@@ -665,37 +689,33 @@ async function ownerPushToServer() {
 }
 
 /**
- * One-time: open `#/portfolio?setupOwner=1&r=READ&w=WRITE` (use encodeURIComponent) to store
- * tokens in this browser and show a clean URL. There is no settings form in the app.
+ * One-time: open `#/portfolio?setupOwner=1&c=…` (recommended) or `…&r=…&w=…` to store
+ * read/write in this browser and show a clean URL. There is no settings form in the app.
  * @returns {true} if the URL was consumed and route() should re-run
  */
 function tryConsumeOwnerSetupFromHash() {
   const { pathname, sp } = parseLocationHash();
   if (pathname !== "/portfolio") return false;
   if (String(sp.get("setupOwner") || "").trim() !== "1") return false;
-  const rParam = sp.get("r");
-  const wParam = sp.get("w");
-  if (rParam == null || wParam == null) return false;
-  let r = String(rParam).trim();
-  let w = String(wParam).trim();
-  try {
-    r = decodeURIComponent(r);
-  } catch {
-    /* keep */
+  const pair = parseOwnerCloudSetupFromSearchParams(sp);
+  if (!pair) return false;
+  if (isPlaceholderOwnerCloudToken(pair.r) || isPlaceholderOwnerCloudToken(pair.w)) {
+    return false;
   }
-  try {
-    w = decodeURIComponent(w);
-  } catch {
-    /* keep */
-  }
-  r = cleanHashParam(r).trim();
-  w = cleanHashParam(w).trim();
-  if (!r || !w) return false;
+  const { r, w } = pair;
   try {
     localStorage.setItem(K.pfOwnerCloud, "1");
     localStorage.setItem(K.pfOwnerCloudRead, r);
     localStorage.setItem(K.pfOwnerCloudWrite, w);
   } catch {
+    try {
+      sessionStorage.setItem(
+        K.ownerStorageFail,
+        "Could not save owner tokens in this browser (private mode or storage blocked). Allow local storage, then use the one-time link again.",
+      );
+    } catch {
+      /* ignore */
+    }
     return false;
   }
   try {
@@ -1267,6 +1287,133 @@ function cleanHashParam(s) {
     x = x.slice(1, -1).trim();
   }
   return x;
+}
+
+/**
+ * Whether the value is the documentation placeholder (not a real secret from Render).
+ * @param {string} s
+ * @returns {boolean}
+ */
+function isPlaceholderOwnerCloudToken(s) {
+  const t = String(s || "").trim();
+  if (!t) return true;
+  return t === "READ_TOKEN" || t === "WRITE_TOKEN";
+}
+
+/**
+ * `setupOwner=1` payload: `c` = JSON (preferred; survives chat apps that break on `&`) or `r` + `w` (legacy).
+ * @param {URLSearchParams} sp
+ * @returns {{ r: string, w: string } | null}
+ */
+function parseOwnerCloudSetupFromSearchParams(sp) {
+  const cVal = sp.get("c");
+  if (cVal != null && String(cVal).trim() !== "") {
+    let raw = String(cVal).trim();
+    try {
+      raw = decodeURIComponent(raw);
+    } catch {
+      /* use as-is */
+    }
+    try {
+      const o = JSON.parse(raw);
+      if (o && typeof o === "object" && typeof o.r === "string" && typeof o.w === "string") {
+        const r0 = cleanHashParam(o.r).trim();
+        const w0 = cleanHashParam(o.w).trim();
+        if (r0 && w0) return { r: r0, w: w0 };
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+  const rParam = sp.get("r");
+  const wParam = sp.get("w");
+  if (rParam == null || wParam == null) return null;
+  let r = String(rParam).trim();
+  let w = String(wParam).trim();
+  try {
+    r = decodeURIComponent(r);
+  } catch {
+    /* keep */
+  }
+  try {
+    w = decodeURIComponent(w);
+  } catch {
+    /* keep */
+  }
+  r = cleanHashParam(r).trim();
+  w = cleanHashParam(w).trim();
+  if (!r || !w) return null;
+  return { r, w };
+}
+
+/**
+ * User-facing reason when the one-time owner link in the hash is wrong or incomplete.
+ * @param {URLSearchParams} sp
+ * @returns {string | null}
+ */
+function getOwnerSetupOneTimeError(sp) {
+  if (String(sp.get("setupOwner") || "").trim() !== "1") return null;
+  const cPresent = sp.get("c") != null && String(sp.get("c") || "").trim() !== "";
+  const rPresent = sp.get("r") != null;
+  const wPresent = sp.get("w") != null;
+  if (cPresent) {
+    const p = parseOwnerCloudSetupFromSearchParams(sp);
+    if (!p) {
+      return "c= is not valid JSON like {\"r\":\"<read>\",\"w\":\"<write>\"} (or values are empty). Rebuild with the one-liner in .env.example.";
+    }
+    if (isPlaceholderOwnerCloudToken(p.r) || isPlaceholderOwnerCloudToken(p.w)) {
+      return "c= still uses the documentation words READ_TOKEN or WRITE_TOKEN. Use the same secrets you set in Render, not the example words in the comment.";
+    }
+    return null;
+  }
+  if (rPresent && !wPresent) {
+    return "r= is present but w= is missing. Many apps break the URL at the first &. Use the single c= form in .env.example instead.";
+  }
+  if (!rPresent && wPresent) {
+    return "w= is present but r= is missing. The read token was likely cut off. Use the c= one-parameter form in .env.example.";
+  }
+  if (!rPresent && !wPresent) {
+    return "Add c= (recommended) or both r= and w=, using the real read/write from Render. Do not use the example words READ_TOKEN and WRITE_TOKEN.";
+  }
+  const pair = parseOwnerCloudSetupFromSearchParams(sp);
+  if (!pair) {
+    return "r= and w= could not be read (empty or bad encoding). If your token contains & or =, use c= in .env.example or encode with encodeURIComponent.";
+  }
+  if (isPlaceholderOwnerCloudToken(pair.r) || isPlaceholderOwnerCloudToken(pair.w)) {
+    return "The link still uses the documentation placeholders READ_TOKEN or WRITE_TOKEN. Paste the real values from your Render app (shared portfolio env vars) or the c= JSON from .env.example.";
+  }
+  return null;
+}
+
+/**
+ * @param {{ reason: string; http?: number; code?: string; detail?: string }} res
+ * @returns {string}
+ */
+function formatOwnerCloudPullErrorHtml(res) {
+  if (res.reason === "no_read_token" || res.reason === "local_storage" || res.reason === "network" || res.reason === "bad_bundle") {
+    return `<p class="sml" role="alert">Could not load: ${esc(
+      (res.detail || res.reason || "unknown") + (res.reason === "no_read_token" ? " (open the one-time owner link to store tokens in this browser)." : ""),
+    )}</p>`;
+  }
+  const h = res.http;
+  let lead =
+    h === 403
+      ? "The read token in this browser does <strong>not</strong> match the server. Open the <strong>one-time device link</strong> with the same values you set in Render: <code>SHARED_PORTFOLIO_READ_TOKEN</code> and <code>SHARED_PORTFOLIO_WRITE_TOKEN</code> (see <code>.env.example</code>)."
+      : h === 404
+        ? "There is <strong>no published snapshot</strong> yet, or the file was cleared (common on <strong>Render free</strong>). On a device that has your data: <strong>Portfolio</strong> → <strong>Publish for family (server)</strong> with the write key. Durable: set <code>GITHUB_PAT</code> and <code>GITHUB_GIST_ID</code> in Render, redeploy, publish again."
+        : h === 503
+          ? "The server is missing <code>SHARED_PORTFOLIO_READ_TOKEN</code> in its environment. Set it, redeploy, and try the one-time link again."
+          : "The server could not return your portfolio for this read token.";
+  const detail = (res.detail || res.code || "").trim();
+  const extra = detail
+    ? `<p class="sml muted" style="margin:8px 0 0 0">Server: ${esc(detail)}${
+        res.code ? ` <code>${esc(String(res.code))}</code>` : ""
+      }${h ? ` (HTTP <code>${String(h)}</code>)` : ""}. Check <a href="/api/health" class="inlineHealth" target="_blank" rel="noopener">/api/health</a> → <code>shared_family_portfolio</code>.</p>`
+    : h
+      ? `<p class="sml muted" style="margin:8px 0 0 0">HTTP <code>${String(h)}</code>. <a href="/api/health" class="inlineHealth" target="_blank" rel="noopener">/api/health</a></p>`
+      : "";
+  return `<p class="sml" role="alert"><strong>Owner (cloud)</strong> — ${lead}</p>${extra}`;
 }
 
 /**
@@ -1891,6 +2038,7 @@ function portfolioHtml() {
   return `
     ${banner}
     <h1 class="h1">Portfolio</h1>
+    <div id="pfOwnerCloudBanner" class="card2 mt" hidden role="alert" aria-live="assertive"></div>
     <div id="pfSharedBanner" class="card2 mt" hidden aria-live="polite"></div>
     <div id="pfFamilyTools" class="card2 mt pfFamilyTools" hidden role="region" aria-label="Family read-only actions">
       <p class="sml muted" style="margin:0 0 8px 0">Tap <strong>Refresh market prices</strong> to pull live quotes (waits for the server). <strong>Reload owner snapshot</strong> uses the last data the owner published. No edits — read-only.</p>
@@ -2085,6 +2233,28 @@ function wire() {
   }
 
   if (pathname.startsWith("/portfolio")) {
+    const elOb = $("pfOwnerCloudBanner");
+    if (elOb instanceof HTMLElement) {
+      let line = getOwnerSetupOneTimeError(sp) || "";
+      try {
+        const fs = (sessionStorage.getItem(K.ownerStorageFail) || "").trim();
+        if (fs) {
+          line = line ? `${line} — ${fs}` : fs;
+          sessionStorage.removeItem(K.ownerStorageFail);
+        }
+      } catch {
+        /* ignore */
+      }
+      if (line) {
+        elOb.hidden = false;
+        elOb.className = "card2 mt globalApiBannerErr";
+        elOb.innerHTML = `<p class="sml" role="alert"><strong>Owner (setup link)</strong> — ${esc(line)}</p>`;
+      } else {
+        elOb.hidden = true;
+        elOb.textContent = "";
+        elOb.className = "card2 mt";
+      }
+    }
     $("btnImp")?.addEventListener("click", async () => {
       const f = $("csv")?.files?.[0];
       if (!f) {
@@ -2309,11 +2479,28 @@ function wire() {
       const th = document.documentElement.dataset.theme || "";
       if (_pfSharedBundle == null && isOwnerCloudSyncActive()) {
         status("Loading from server…", th);
-        const ok = await ownerPullFromServer();
-        if (!ok) {
-          status("Could not load server copy. Open your one-time device link again (see .env.example).", th);
-        } else {
+        const res = await ownerPullFromServer();
+        if (res.ok) {
+          if (elOb instanceof HTMLElement) {
+            const { sp: sp2 } = parseLocationHash();
+            if (!getOwnerSetupOneTimeError(sp2)) {
+              elOb.hidden = true;
+              elOb.textContent = "";
+              elOb.className = "card2 mt";
+            }
+          }
           status("Portfolio", th);
+        } else {
+          if (elOb instanceof HTMLElement) {
+            elOb.hidden = false;
+            elOb.className = "card2 mt globalApiBannerErr";
+            elOb.innerHTML = formatOwnerCloudPullErrorHtml(res);
+          }
+          const st =
+            (res.http === 403 && "Read token rejected — re-open the one-time link with the values from Render.") ||
+            (res.http === 404 && "No snapshot on the server — publish from a device that has your data (see banner).") ||
+            "Owner sync: could not load the server copy (see red banner).";
+          status(st, th);
         }
       } else {
         status("Portfolio", th);
