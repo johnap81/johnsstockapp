@@ -47,6 +47,10 @@
 * {
   box-sizing: border-box;
 }
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 html,
 body {
   height: 100%;
@@ -74,6 +78,7 @@ body {
   backdrop-filter: blur(14px) saturate(1.2);
   border-bottom: 1px solid color-mix(in srgb, var(--a2) 22%, var(--bd));
   box-shadow: 0 1px 0 color-mix(in srgb, var(--tx) 4%, transparent);
+  padding-top: env(safe-area-inset-top, 0);
 }
 
 .bar {
@@ -428,7 +433,9 @@ a.btn {
   width: 100%;
   max-width: 100%;
   margin: 0;
-  padding: 16px clamp(12px, 2.5vw, 28px) 32px;
+  padding: 16px clamp(12px, 2.5vw, 28px) max(32px, env(safe-area-inset-bottom, 0));
+  padding-left: max(12px, env(safe-area-inset-left, 0));
+  padding-right: max(12px, env(safe-area-inset-right, 0));
   box-sizing: border-box;
 }
 
@@ -490,6 +497,7 @@ a.btn {
   border-radius: var(--r);
   padding: 18px;
   box-shadow: 0 4px 24px color-mix(in srgb, var(--bg) 40%, rgba(0, 0, 0, 0.08));
+  min-height: 45vh;
 }
 
 .h1 {
@@ -570,6 +578,17 @@ a.btn {
 
 .pfManageSection {
   border: 1px solid var(--bd);
+}
+
+/* Family read-only: keep price actions discoverable on long mobile pages */
+.pfFamilyTools {
+  border: 1px solid color-mix(in srgb, var(--a) 35%, var(--bd));
+  background: color-mix(in srgb, var(--a) 8%, var(--card-elev));
+}
+.pfFamilyToolBtns .btn {
+  min-height: 44px;
+  padding-left: 16px;
+  padding-right: 16px;
 }
 
 /* Portfolio → Import: manual add row (compact grid) */
@@ -1860,6 +1879,9 @@ code {
   .footLinks {
     justify-content: flex-start;
     width: 100%;
+  }
+  .foot {
+    padding-bottom: max(20px, env(safe-area-inset-bottom, 0));
   }
   .instrStickyTop {
     top: 52px;

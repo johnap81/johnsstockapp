@@ -12,6 +12,13 @@ const K = {
   llmBannerDismiss: "jsa.llmBannerDismiss",
   /** Last successful GET /api/t212/rows `fetched_at` (ISO) for display next to Sync. */
   pfT212LastFetch: "jsa.pf.t212LastFetch",
+  /**
+   * Family read-only: long read token in session (same tab). Lets nav links keep `#/portfolio?view=family&token=…` after
+   * leaving the page, so a bare `#/portfolio` tap does not show an empty local ledger.
+   */
+  pfFamilyRead: "jsa.pf.familyReadTokenV1",
+  /** Set to `"1"` when this tab has successfully entered family view at least once (pairs with `pfFamilyRead`). */
+  pfFamilyMode: "jsa.pf.familyModeV1",
 };
 /** Last successful search query — restored when returning from an instrument (`#/search`). */
 const SEARCH_LAST_Q = "jsa.search.lastQ";
@@ -566,6 +573,105 @@ function savePfBundle(bundle) {
   }
 }
 
+function clearFamilySessionPair() {
+  try {
+    sessionStorage.removeItem(K.pfFamilyRead);
+    sessionStorage.removeItem(K.pfFamilyMode);
+  } catch {
+    /* ignore */
+  }
+}
+
+function isFamilySessionPairActive() {
+  try {
+    if (sessionStorage.getItem(K.pfFamilyMode) !== "1") return false;
+    return Boolean((sessionStorage.getItem(K.pfFamilyRead) || "").trim());
+  } catch {
+    return false;
+  }
+}
+
+/** True when this browser has no v2 portfolio rows on disk (typical for a “family” phone; owners usually have at least one row). */
+function isLocalPfStorageEmpty() {
+  try {
+    const raw = localStorage.getItem(K.pf);
+    if (!raw) return true;
+    const x = JSON.parse(raw);
+    if (x?.v === 2 && x.brokers && typeof x.brokers === "object") {
+      for (const id of PF_BROKER_IDS) {
+        if (Array.isArray(x.brokers[id]?.rows) && x.brokers[id].rows.length > 0) return false;
+      }
+    } else if (Array.isArray(x?.rows) && x.rows.length > 0) {
+      return false;
+    }
+  } catch {
+    return true;
+  }
+  return true;
+}
+
+/**
+ * Strips a query key from the location hash and replaces history, without adding a new session entry.
+ * @param {string} key
+ */
+function stripHashQueryKey(key) {
+  const k = String(key || "").trim();
+  if (!k) return;
+  const raw0 = (location.hash || "#").replace(/^#/, "");
+  const qi = raw0.indexOf("?");
+  if (qi < 0) return;
+  const pathPart = raw0.slice(0, qi) || "/search";
+  const q = new URLSearchParams(raw0.slice(qi + 1));
+  if (!q.has(k)) return;
+  q.delete(k);
+  const nq = q.toString();
+  const next = nq ? `#${pathPart}?${nq}` : `#${pathPart}`;
+  if (location.hash === next) return;
+  try {
+    history.replaceState(null, "", `${location.pathname}${location.search}${next}`);
+  } catch {
+    /* ignore */
+  }
+}
+
+function familyReadOnlyPortfolioHref(/** @type {string} */ t) {
+  return `#/portfolio?view=family&token=${encodeURIComponent(t)}`;
+}
+
+/**
+ * @returns {string} `#/portfolio` or the family read-only link when this tab is using a family snapshot
+ *   (in-memory, or a resume on a device with no local ledger rows so Search → Portfolio keeps the token).
+ */
+function hrefPortfolio() {
+  try {
+    const { sp } = parseLocationHash();
+    if ((sp.get("view") || "").trim().toLowerCase() === "family") {
+      const u = (sp.get("token") || "").trim();
+      if (u) return familyReadOnlyPortfolioHref(u);
+    }
+  } catch {
+    /* ignore */
+  }
+  if (!isFamilySessionPairActive()) return "#/portfolio";
+  const t = (() => {
+    try {
+      return (sessionStorage.getItem(K.pfFamilyRead) || "").trim();
+    } catch {
+      return "";
+    }
+  })();
+  if (!t) return "#/portfolio";
+  if (_pfSharedBundle != null) return familyReadOnlyPortfolioHref(t);
+  if (isLocalPfStorageEmpty()) return familyReadOnlyPortfolioHref(t);
+  return "#/portfolio";
+}
+
+function updateFamilyNavHrefs() {
+  const a = document.querySelector("a[data-pf-nav]");
+  if (!(a instanceof HTMLAnchorElement)) return;
+  a.href = hrefPortfolio();
+}
+
 /** @returns {Promise<{ ok: boolean, updated_at?: string }>} */
 async function fetchSharedFamilyPortfolio(readToken) {
   _pfSharedBundle = null;
@@ -587,24 +693,62 @@ async function fetchSharedFamilyPortfolio(readToken) {
   }
 }
 
-/** Family read-only mode: server snapshot + `view=family` in the hash. */
+/**
+ * Family read-only: load server snapshot for `?view=family&token=…` in the hash, or recover from
+ * a prior successful load in this tab (so Search → Portfolio does not show an empty ledger on phones).
+ */
 async function applyPortfolioSharedFromHash(sp) {
-  const view = (sp.get("view") || "").trim().toLowerCase();
-  const tok = (sp.get("token") || "").trim();
   const ban = $("pfSharedBanner");
   const manage = $("pfManage");
-  if (view === "family" && tok) {
+  const view = (sp.get("view") || "").trim().toLowerCase();
+  const exitFam = (sp.get("exitFamily") || "").trim() === "1";
+  if (exitFam) {
+    clearFamilySessionPair();
+    _pfSharedBundle = null;
+    stripHashQueryKey("exitFamily");
+    if (ban instanceof HTMLElement) {
+      ban.hidden = true;
+      ban.textContent = "";
+      ban.className = "card2 mt";
+    }
+    if (manage instanceof HTMLElement) manage.hidden = false;
+    const fte = $("pfFamilyTools");
+    if (fte instanceof HTMLElement) fte.hidden = true;
+    updateFamilyNavHrefs();
+    return;
+  }
+  const tokInUrl = (sp.get("token") || "").trim();
+  let tok = tokInUrl;
+  if (!tok) {
+    if (isFamilySessionPairActive() && isLocalPfStorageEmpty()) {
+      try {
+        tok = (sessionStorage.getItem(K.pfFamilyRead) || "").trim();
+      } catch {
+        tok = "";
+      }
+    }
+  }
+  const canResumeFromSession = !tokInUrl && isFamilySessionPairActive() && isLocalPfStorageEmpty();
+  const wantsFamily = Boolean(tok) && (view === "family" || canResumeFromSession);
+  if (wantsFamily) {
     const { ok, updated_at: ua } = await fetchSharedFamilyPortfolio(tok);
     if (ok) {
+      try {
+        sessionStorage.setItem(K.pfFamilyRead, tok);
+        sessionStorage.setItem(K.pfFamilyMode, "1");
+      } catch {
+        /* ignore */
+      }
       if (ban instanceof HTMLElement) {
         ban.hidden = false;
         const when = ua ? ` · snapshot ${esc(String(ua))}` : "";
         ban.className = "card2 mt migrateBanner";
-        ban.innerHTML = `<p class="sml"><strong>Family view (read-only)</strong> — data from the server${when}. Use the buttons below for latest market prices. <a class="backLink" href="#/portfolio">Open normal portfolio</a> (this device only).</p>`;
+        ban.innerHTML = `<p class="sml"><strong>Family view (read-only)</strong> — data from the server${when}. Scrolling: totals load after FX; use the buttons for latest prices. <a class="backLink" href="#/portfolio?exitFamily=1">Open normal portfolio</a> (this device only) — clears the family link in this tab.</p>`;
       }
       if (manage instanceof HTMLElement) manage.hidden = true;
       const ft = $("pfFamilyTools");
       if (ft instanceof HTMLElement) ft.hidden = false;
+      updateFamilyNavHrefs();
       return;
     }
     if (ban instanceof HTMLElement) {
@@ -613,8 +757,10 @@ async function applyPortfolioSharedFromHash(sp) {
       ban.innerHTML = `<p class="sml"><strong>Could not load family snapshot.</strong> The owner may not have published yet, or the read token in the URL does not match the server. Check <a href="/api/health" target="_blank" rel="noopener">/api/health</a> → <code>shared_family_portfolio</code>.</p>`;
     }
     if (manage instanceof HTMLElement) manage.hidden = false;
-    const ft = $("pfFamilyTools");
-    if (ft instanceof HTMLElement) ft.hidden = true;
+    const ftb = $("pfFamilyTools");
+    if (ftb instanceof HTMLElement) ftb.hidden = true;
+    if (!tokInUrl) clearFamilySessionPair();
+    updateFamilyNavHrefs();
     return;
   }
   _pfSharedBundle = null;
@@ -626,6 +772,7 @@ async function applyPortfolioSharedFromHash(sp) {
   if (manage instanceof HTMLElement) manage.hidden = false;
   const ftx = $("pfFamilyTools");
   if (ftx instanceof HTMLElement) ftx.hidden = true;
+  updateFamilyNavHrefs();
 }
 
 async function publishPortfolioToServer() {
@@ -684,7 +831,14 @@ async function familyReloadOwnerSnapshot() {
     return;
   }
   const { sp } = parseLocationHash();
-  const tok = (sp.get("token") || "").trim();
+  let tok = (sp.get("token") || "").trim();
+  if (!tok) {
+    try {
+      tok = (sessionStorage.getItem(K.pfFamilyRead) || "").trim();
+    } catch {
+      tok = "";
+    }
+  }
   if (!tok) {
     status("Missing token in link");
     return;
@@ -1027,7 +1181,7 @@ function paintInstrPfHold(sym, ex) {
     </div>`;
     })
     .join("");
-  el.innerHTML = `<div class="instrPfHoldInner">${blocks}<p class="sml muted mt">Live quote below; expand <strong>Price history</strong> for the chart. Update <strong>Last</strong> from <a class="backLink" href="#/portfolio">Portfolio</a> → <strong>Refresh prices</strong> on the ledger tab that holds this row.</p></div>`;
+  el.innerHTML = `<div class="instrPfHoldInner">${blocks}<p class="sml muted mt">Live quote below; expand <strong>Price history</strong> for the chart. Update <strong>Last</strong> from <a class="backLink" href="${hrefPortfolio()}">Portfolio</a> → <strong>Refresh prices</strong> on the ledger tab that holds this row.</p></div>`;
   void enrichInstrPfHoldEur(sym, ex);
 }
 
@@ -1398,6 +1552,7 @@ function route() {
   } else v.innerHTML = searchHtml();
   wire();
   void refreshGlobalApiBanner();
+  updateFamilyNavHrefs();
 }
 
 function searchHtml() {
@@ -1435,7 +1590,7 @@ function instrumentHtml(sym, ex, nm, ccyHint) {
     <div class="instrNav">
       <a class="backLink" href="#/search">← Search</a>
       <a class="backLink muted sml" href="#/watchlist">Watchlist</a>
-      <a class="backLink muted sml" href="#/portfolio">Portfolio</a>
+      <a class="backLink muted sml" href="${hrefPortfolio()}">Portfolio</a>
     </div>
     <header class="instrHead">
       <h1 class="h1" id="instrTitle">${title}</h1>
@@ -1543,9 +1698,9 @@ function portfolioHtml() {
     ${banner}
     <h1 class="h1">Portfolio</h1>
     <div id="pfSharedBanner" class="card2 mt" hidden aria-live="polite"></div>
-    <div id="pfFamilyTools" class="card2 mt" hidden role="region" aria-label="Family read-only actions">
-      <p class="sml muted" style="margin:0 0 8px 0">You can update <strong>market prices</strong> and reload the <strong>owner’s last published</strong> snapshot without editing anything.</p>
-      <div class="rowgap" style="display:flex;flex-wrap:wrap;gap:10px;">
+    <div id="pfFamilyTools" class="card2 mt pfFamilyTools" hidden role="region" aria-label="Family read-only actions">
+      <p class="sml muted" style="margin:0 0 8px 0">Tap <strong>Refresh market prices</strong> to pull live quotes (waits for the server). <strong>Reload owner snapshot</strong> uses the last data the owner published. No edits — read-only.</p>
+      <div class="rowgap pfFamilyToolBtns" style="display:flex;flex-wrap:wrap;gap:10px;">
         <button type="button" class="btn" id="btnFamilyRefPx">Refresh market prices</button>
         <button type="button" class="btn ghost" id="btnFamilySnap">Reload owner snapshot</button>
       </div>
@@ -1958,6 +2113,7 @@ function wire() {
     void (async () => {
       await applyPortfolioSharedFromHash(sp);
       renderPf();
+      updateFamilyNavHrefs();
       status("Portfolio", document.documentElement.dataset.theme || "");
     })();
     return;
