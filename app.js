@@ -220,6 +220,147 @@ function insuranceInvestedTotal(r) {
   return num(r?.valueAtPurchase) + sumInsurancePayments(r);
 }
 
+/**
+ * @param {string} s
+ * @returns {Date | null}
+ */
+function parseLocalYmdToDate(s) {
+  const t = String(s || "").trim();
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(t);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (!y || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  return new Date(y, mo - 1, d);
+}
+
+/**
+ * @param {string} [startYmd]
+ * @param {Date} [endD]
+ * @returns {number}
+ */
+function dayCountYmdToDate(startYmd, endD) {
+  const a = parseLocalYmdToDate(startYmd);
+  if (!a) return 0;
+  const b = endD instanceof Date ? new Date(endD) : new Date();
+  b.setHours(0, 0, 0, 0);
+  a.setHours(0, 0, 0, 0);
+  return Math.max(0, Math.floor((b - a) / 864e5));
+}
+
+/**
+ * FD: simple (non-compound) interest: principal × (r/100) × (days/365). Stops at maturity if set.
+ * @returns {{ value: number, interest: number, days: number }}
+ */
+function computeFdSimpleValue(r) {
+  if (!r || !isFdAltRow(r)) return { value: 0, interest: 0, days: 0 };
+  const P = num(r.principal);
+  if (P <= 0) return { value: 0, interest: 0, days: 0 };
+  const g = num(r.ratePct);
+  if (g < 0) return { value: P, interest: 0, days: 0 };
+  const open = r.openDate || "";
+  if (!String(open).trim()) {
+    if (r.fdValMode === "simple" || r.fdValMode == null) return { value: P, interest: 0, days: 0 };
+    return { value: num(r.currentValue) || P, interest: 0, days: 0 };
+  }
+  const a = parseLocalYmdToDate(open);
+  if (!a) return { value: P, interest: 0, days: 0 };
+  a.setHours(0, 0, 0, 0);
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const matD = r.maturityDate ? parseLocalYmdToDate(String(r.maturityDate)) : null;
+  let end = new Date(now);
+  if (matD) {
+    matD.setHours(0, 0, 0, 0);
+    if (end > matD) end = matD;
+  }
+  if (end < a) end = new Date(a);
+  const days = Math.max(0, Math.floor((end - a) / 864e5));
+  const interest = P * (g / 100) * (days / 365);
+  return { value: P + interest, interest, days };
+}
+
+/**
+ * @param {object} r
+ * @returns {{ value: number, inv: number, pl: number, sub?: string, mode: string, interest?: number, days?: number }}
+ */
+function getFdRowMetrics(r) {
+  if (!isFdAltRow(r)) {
+    return { value: 0, inv: 0, pl: 0, mode: "x" };
+  }
+  const inv = num(r.principal);
+  const mode = r.fdValMode === "manual" || r.fdValMode === "m" ? "manual" : "simple";
+  if (mode === "manual") {
+    const v = num(r.currentValue) > 0 ? num(r.currentValue) : inv;
+    return { value: v, inv, pl: v - inv, sub: "Manual value", mode: "manual" };
+  }
+  const { value, interest, days } = computeFdSimpleValue(r);
+  return {
+    value,
+    inv,
+    pl: value - inv,
+    sub: `Simple int. · ${days}d · +${fmtN(interest, 2)} ${String(r.ccy || "").toUpperCase()}`,
+    interest,
+    days,
+    mode: "simple",
+  };
+}
+
+/**
+ * Insurance: daily compounding on each cashflow (lump + premiums) at the same annual % p.a. Manual mode uses stored currentValue.
+ * @param {object} r
+ * @returns {{ value: number, inv: number, pl: number, sub?: string, mode: string }}
+ */
+function getInsuranceRowMetrics(r) {
+  if (!isInsuranceAltRow(r)) {
+    return { value: 0, inv: 0, pl: 0, mode: "x" };
+  }
+  const inv = insuranceInvestedTotal(r);
+  const g = num(r.growthPct);
+  const modeS = r.insValMode;
+  const isManual = modeS === "manual" || modeS === "m" || (g <= 0 && modeS !== "compound");
+  if (isManual) {
+    const v = num(r.currentValue) > 0 ? num(r.currentValue) : inv;
+    return {
+      value: v,
+      inv,
+      pl: v - inv,
+      sub: g <= 0 && !isManual ? "Set growth % or use manual value mode" : "Manual or no growth",
+      mode: "manual",
+    };
+  }
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let v = 0;
+  const vp = num(r.valueAtPurchase);
+  if (vp > 0) {
+    const pdt = r.purchaseDate && String(r.purchaseDate).trim() ? r.purchaseDate : "";
+    if (pdt) {
+      const d = dayCountYmdToDate(pdt, today);
+      v += vp * (1 + (g / 100) / 365) ** d;
+    } else {
+      v += vp;
+    }
+  }
+  for (const p of Array.isArray(r.payments) ? r.payments : []) {
+    const amt = num(p?.amount);
+    if (amt <= 0) continue;
+    const pdt2 = p?.date && String(p.date).trim() ? String(p.date).trim() : new Date().toISOString().slice(0, 10);
+    const d2 = dayCountYmdToDate(pdt2, today);
+    v += amt * (1 + (g / 100) / 365) ** d2;
+  }
+  if (v <= 0) v = num(r.currentValue) > 0 ? num(r.currentValue) : inv;
+  const nPay = Array.isArray(r.payments) ? r.payments.length : 0;
+  return {
+    value: v,
+    inv,
+    pl: v - inv,
+    sub: `Comp. (daily) on flow · p.a. ${fmtN(g, 2)}%${nPay ? ` · ${nPay} top-up(s)` : ""}`,
+    mode: "compound",
+  };
+}
+
 function isInsuranceAltRow(r) {
   return Boolean(r && (r.policyName != null || r.policyNo != null || r.valueAtPurchase != null));
 }
@@ -273,6 +414,10 @@ function migratePortfolioBundleShape(bundle) {
         ensurePfRowId(r);
         changed = true;
       }
+      if (isInsuranceAltRow(r) && r.insValMode == null) {
+        r.insValMode = num(r.growthPct) > 0 ? "compound" : "manual";
+        changed = true;
+      }
     }
   }
   const fdRows = bundle.brokers[PF_FIXED_DEPOSIT]?.rows;
@@ -281,6 +426,10 @@ function migratePortfolioBundleShape(bundle) {
       if (!r || typeof r !== "object") continue;
       if (isFdAltRow(r) && !pfRowId(r)) {
         ensurePfRowId(r);
+        changed = true;
+      }
+      if (isFdAltRow(r) && r.fdValMode == null) {
+        r.fdValMode = "simple";
         changed = true;
       }
     }
@@ -2540,13 +2689,20 @@ function wire() {
           status("Need policy name and currency");
           return;
         }
+        const insM = (val("fInsValMode") || "compound").toLowerCase() === "manual" ? "manual" : "compound";
+        const curMan = num(val("fPolCur"));
+        if (insM === "manual" && !(curMan > 0)) {
+          status("Manual mode: enter the current / surrender value");
+          return;
+        }
         const row = {
           policyName: pn,
           policyNo: val("fPolNo"),
           purchaseDate: val("fPolPur"),
           valueAtPurchase: num(val("fPolV0")),
           growthPct: num(val("fPolGr")),
-          currentValue: num(val("fPolCur")),
+          currentValue: insM === "manual" ? curMan : 0,
+          insValMode: insM,
           ccy,
           insCompany: getPfInsuranceCompany(),
           payments: [],
@@ -2567,6 +2723,16 @@ function wire() {
           status("Need bank, deposit name, currency, and principal > 0");
           return;
         }
+        const fdM = (val("fFdValMode") || "simple").toLowerCase() === "manual" ? "manual" : "simple";
+        const curFd = num(val("fFdCur"));
+        if (fdM === "manual" && !(curFd > 0)) {
+          status("Manual mode: enter the current or maturity value");
+          return;
+        }
+        if (fdM === "simple" && !String(val("fFdOpen") || "").trim()) {
+          status("Auto (simple interest): set the open date");
+          return;
+        }
         const row = {
           fdBank: bank,
           fdName: name,
@@ -2574,7 +2740,8 @@ function wire() {
           openDate: val("fFdOpen"),
           principal: pr,
           ratePct: num(val("fFdRate")),
-          currentValue: num(val("fFdCur")) || pr,
+          currentValue: fdM === "manual" ? curFd : 0,
+          fdValMode: fdM,
           maturityDate: val("fFdMat"),
           ccy,
           fdCountry: val("fFdCtry"),
@@ -2626,13 +2793,13 @@ function wire() {
       let name = "johnsstockapp-template.csv";
       if (b === PF_INSURANCE) {
         csv =
-          "insCompany,policyName,policyNo,purchaseDate,valueAtPurchase,growthPct,currentValue,currency\n" +
-          "sbi_life,Smart Wealth,SW123,2020-01-15,50000,7,62000,INR\n";
+          "insCompany,policyName,policyNo,purchaseDate,valueAtPurchase,growthPct,insValMode,currentValue,currency,paymentsJson\n" +
+          'sbi_life,Smart Wealth,SW123,2020-01-15,50000,7,compound,0,INR,"[]"\n';
         name = "johnsstockapp-insurance-template.csv";
       } else if (b === PF_FIXED_DEPOSIT) {
         csv =
-          "fdBank,fdCountry,fdName,fdRef,openDate,principal,ratePct,currentValue,maturityDate,currency\n" +
-          "SBI,India,12-month FD,R1,2024-04-01,100000,7.1,105000,2025-04-01,INR\n";
+          "fdBank,fdCountry,fdName,fdRef,openDate,principal,ratePct,fdValMode,currentValue,maturityDate,currency\n" +
+          "SBI,India,12-month FD,R1,2024-04-01,100000,7.1,simple,0,2025-04-01,INR\n";
         name = "johnsstockapp-fd-template.csv";
       }
       const a = document.createElement("a");
@@ -4580,14 +4747,13 @@ const PF_PIE_PAL = ["#2dd4bf", "#a78bfa", "#fb7185", "#fbbf24", "#38bdf8", "#94a
 /** Portfolio row weight for charts: market value, else cost, else qty. */
 function pfRowWeight(r) {
   if (isInsuranceAltRow(r)) {
-    const cur = num(r.currentValue);
-    if (cur > 0) return cur;
-    const inv = insuranceInvestedTotal(r);
-    return inv > 0 ? inv : 0;
+    const m = getInsuranceRowMetrics(r);
+    if (m.value > 0) return m.value;
+    return m.inv > 0 ? m.inv : 0;
   }
   if (isFdAltRow(r)) {
-    const cur = num(r.currentValue);
-    if (cur > 0) return cur;
+    const m = getFdRowMetrics(r);
+    if (m.value > 0) return m.value;
     const pr = num(r.principal);
     return pr > 0 ? pr : 0;
   }
@@ -5068,6 +5234,7 @@ function exportPfCsv() {
         "purchaseDate",
         "valueAtPurchase",
         "growthPct",
+        "insValMode",
         "currentValue",
         "currency",
         "paymentsJson",
@@ -5084,6 +5251,7 @@ function exportPfCsv() {
           escC(r.purchaseDate),
           escC(fmtN(num(r.valueAtPurchase), 4)),
           escC(fmtN(num(r.growthPct), 4)),
+          escC(r.insValMode || ""),
           escC(fmtN(num(r.currentValue), 4)),
           escC(r.ccy),
           escC(pay),
@@ -5092,7 +5260,19 @@ function exportPfCsv() {
     }
   } else if (b === PF_FIXED_DEPOSIT) {
     lines.push(
-      ["fdBank", "fdCountry", "fdName", "fdRef", "openDate", "principal", "ratePct", "currentValue", "maturityDate", "currency"].join(","),
+      [
+        "fdBank",
+        "fdCountry",
+        "fdName",
+        "fdRef",
+        "openDate",
+        "principal",
+        "ratePct",
+        "fdValMode",
+        "currentValue",
+        "maturityDate",
+        "currency",
+      ].join(","),
     );
     for (const r of rows) {
       if (!isFdAltRow(r)) continue;
@@ -5105,6 +5285,7 @@ function exportPfCsv() {
           escC(r.openDate),
           escC(fmtN(num(r.principal), 4)),
           escC(fmtN(num(r.ratePct), 4)),
+          escC(r.fdValMode || ""),
           escC(fmtN(num(r.currentValue), 4)),
           escC(r.maturityDate),
           escC(r.ccy),
@@ -5294,13 +5475,87 @@ function paintPfSubLedgerBar() {
   bar.innerHTML = "";
 }
 
+/** Live preview for insurance / FD add-row form (uses same metric helpers as the table). */
+function wirePfAddFieldPreviews() {
+  const b = getActiveBroker();
+  const runIns = () => {
+    const el = $("fPolValPreview");
+    if (!(el instanceof HTMLElement)) return;
+    const mode = (/** @type {HTMLSelectElement | null} */($("fInsValMode"))?.value || "compound").toLowerCase();
+    if (mode === "manual") {
+      el.textContent = "Enter the current / surrender value in the field above (manual mode).";
+      return;
+    }
+    const ccy0 = normalizeCcyForFx(String(val("fPolCcy") || "INR").toUpperCase());
+    const temp = {
+      policyName: "—",
+      valueAtPurchase: num(val("fPolV0")),
+      growthPct: num(val("fPolGr")),
+      purchaseDate: val("fPolPur"),
+      payments: [],
+      insValMode: "compound",
+      ccy: ccy0,
+    };
+    const m = getInsuranceRowMetrics(temp);
+    el.textContent =
+      m.value > 0
+        ? `Preview: ≈ ${fmtMoney(ccy0, m.value)}  ·  ${m.sub || ""}`
+        : "Set purchase date, initial value, and growth % p.a. to see a preview.";
+  };
+  const runFd = () => {
+    const el = $("fFdValPreview");
+    if (!(el instanceof HTMLElement)) return;
+    const mode = (/** @type {HTMLSelectElement | null} */($("fFdValMode"))?.value || "simple").toLowerCase();
+    if (mode === "manual") {
+      el.textContent = "Enter current or maturity value in the field above (manual mode).";
+      return;
+    }
+    const ccy0 = normalizeCcyForFx(String(val("fFdCcy") || "INR").toUpperCase());
+    const temp = {
+      fdName: "—",
+      fdBank: "—",
+      principal: num(val("fFdPrin")),
+      ratePct: num(val("fFdRate")),
+      openDate: val("fFdOpen"),
+      maturityDate: val("fFdMat"),
+      fdValMode: "simple",
+      ccy: ccy0,
+    };
+    const m = getFdRowMetrics(temp);
+    el.textContent =
+      m.value > 0
+        ? `Preview: ≈ ${fmtMoney(ccy0, m.value)}  ·  ${m.sub || ""}`
+        : "Set principal, open date, and rate to see a preview (simple interest, no compounding).";
+  };
+  if (b === PF_INSURANCE) {
+    for (const id of ["fPolV0", "fPolGr", "fPolPur", "fInsValMode", "fPolCur", "fPolCcy"]) {
+      const n = $(id);
+      n?.addEventListener("input", runIns);
+      n?.addEventListener("change", runIns);
+    }
+    runIns();
+  } else if (b === PF_FIXED_DEPOSIT) {
+    for (const id of ["fFdPrin", "fFdRate", "fFdOpen", "fFdMat", "fFdValMode", "fFdCur", "fFdCcy"]) {
+      const n = $(id);
+      n?.addEventListener("input", runFd);
+      n?.addEventListener("change", runFd);
+    }
+    runFd();
+  }
+}
+
 function paintPfAddFieldsMount() {
   const mount = $("pfAddFieldsMount");
   if (!mount) return;
   const b = getActiveBroker();
   if (b === PF_INSURANCE) {
-    const coLab = esc(PF_INS_CO_LABEL[getPfInsuranceCompany()] || "");
     mount.innerHTML = `
+      <label class="lbl pfAddField">How to value the policy
+        <select class="in" id="fInsValMode" aria-label="Insurance valuation mode">
+          <option value="compound" selected>Auto — compound (daily) on each payment + initial lump</option>
+          <option value="manual">Manual — type the current / surrender value yourself</option>
+        </select>
+      </label>
       <label class="lbl pfAddField">Policy name
         <input class="in" id="fPolName" placeholder="e.g. Smart Wealth" autocomplete="off" />
       </label>
@@ -5313,15 +5568,18 @@ function paintPfAddFieldsMount() {
       <label class="lbl pfAddField">Value at purchase
         <input class="in" id="fPolV0" placeholder="Initial premium / corpus" inputmode="decimal" autocomplete="off" />
       </label>
-      <label class="lbl pfAddField">Avg growth % p.a. <span class="muted sml">(opt.)</span>
+      <label class="lbl pfAddField">Expected growth % p.a. (for auto mode)
         <input class="in" id="fPolGr" placeholder="e.g. 7" inputmode="decimal" autocomplete="off" />
       </label>
-      <label class="lbl pfAddField">Current possible value
-        <input class="in" id="fPolCur" placeholder="Surrender / fund value" inputmode="decimal" autocomplete="off" />
+      <label class="lbl pfAddField">Current / surrender value <span class="muted sml">(manual mode)</span>
+        <input class="in" id="fPolCur" placeholder="only if you chose Manual above" inputmode="decimal" autocomplete="off" />
       </label>
       <label class="lbl pfAddField">Currency
         <input class="in" id="fPolCcy" placeholder="INR, EUR…" autocomplete="off" />
-      </label>`;
+      </label>
+      <p class="sml muted pfAddField" id="fPolValPreview" style="grid-column:1/-1" role="status" aria-live="polite"></p>
+      <p class="sml pfAddField" style="grid-column:1/-1;margin:0" role="note">After the policy is added, use <strong>Log premium</strong> on each row to record every monthly or yearly instalment (date + amount).</p>`;
+    wirePfAddFieldPreviews();
     return;
   }
   if (b === PF_CRYPTO) {
@@ -5351,6 +5609,12 @@ function paintPfAddFieldsMount() {
   }
   if (b === PF_FIXED_DEPOSIT) {
     mount.innerHTML = `
+      <label class="lbl pfAddField">How to value the deposit
+        <select class="in" id="fFdValMode" aria-label="Fixed deposit valuation mode">
+          <option value="simple" selected>Auto — simple interest (no compounding), daily accrual from open date</option>
+          <option value="manual">Manual — type current or maturity value yourself</option>
+        </select>
+      </label>
       <label class="lbl pfAddField">Bank / institution
         <input class="in" id="fFdBank" placeholder="SBI, HDFC…" autocomplete="off" />
       </label>
@@ -5366,21 +5630,23 @@ function paintPfAddFieldsMount() {
       <label class="lbl pfAddField">Principal
         <input class="in" id="fFdPrin" inputmode="decimal" autocomplete="off" />
       </label>
-      <label class="lbl pfAddField">Rate % p.a. <span class="muted sml">(opt.)</span>
+      <label class="lbl pfAddField">Rate % p.a. <span class="muted sml">(for auto mode)</span>
         <input class="in" id="fFdRate" inputmode="decimal" autocomplete="off" />
       </label>
-      <label class="lbl pfAddField">Current / maturity value
-        <input class="in" id="fFdCur" inputmode="decimal" autocomplete="off" />
-      </label>
-      <label class="lbl pfAddField">Maturity date <span class="muted sml">(opt.)</span>
+      <label class="lbl pfAddField">Maturity date <span class="muted sml">(accrual stops here)</span>
         <input class="in" id="fFdMat" type="date" />
+      </label>
+      <label class="lbl pfAddField">Current / maturity value <span class="muted sml">(manual mode)</span>
+        <input class="in" id="fFdCur" placeholder="only if Manual" inputmode="decimal" autocomplete="off" />
       </label>
       <label class="lbl pfAddField">Currency
         <input class="in" id="fFdCcy" placeholder="INR…" autocomplete="off" />
       </label>
       <label class="lbl pfAddField">Country / region <span class="muted sml">(opt.)</span>
         <input class="in" id="fFdCtry" placeholder="India, Ireland…" autocomplete="off" />
-      </label>`;
+      </label>
+      <p class="sml muted pfAddField" id="fFdValPreview" style="grid-column:1/-1" role="status" aria-live="polite"></p>`;
+    wirePfAddFieldPreviews();
     return;
   }
   mount.innerHTML = `
@@ -5452,11 +5718,22 @@ function handlePfTableClick(ev) {
   const pr = t.closest("[data-pf-prem]");
   if (pr instanceof HTMLElement && pr.dataset.pfPrem) {
     const rid = pr.dataset.pfPrem;
-    const amtS = window.prompt("Premium / top-up amount (number only)", "");
+    const amtS = window.prompt("Premium / instalment amount (number only)", "");
     if (amtS === null) return;
     const amt = num(amtS);
     if (!(amt > 0)) {
       status("Enter a positive amount");
+      return;
+    }
+    const defD = new Date().toISOString().slice(0, 10);
+    const dateS = window.prompt(
+      "Date this premium was paid — use YYYY-MM-DD (e.g. monthly or yearly instalments)",
+      defD,
+    );
+    if (dateS === null) return;
+    const ds = String(dateS || "").trim() || defD;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) {
+      status("Use date format YYYY-MM-DD");
       return;
     }
     const bundle = loadPfBundle();
@@ -5464,11 +5741,10 @@ function handlePfTableClick(ev) {
     const row = rows.find((r) => pfRowId(r) === rid || String(r.sym || "") === rid);
     if (!row || !isInsuranceAltRow(row)) return;
     if (!Array.isArray(row.payments)) row.payments = [];
-    const today = new Date().toISOString().slice(0, 10);
-    row.payments.push({ date: today, amount: amt });
+    row.payments.push({ date: ds, amount: amt });
     savePfBundle(bundle);
     renderPf();
-    status("Payment logged");
+    status(`Premium logged · ${ds}`);
   }
 }
 
@@ -5489,11 +5765,12 @@ function renderPfInsuranceTable(el) {
   }
   const rowObjs = rows.map((r) => {
     if (isInsuranceAltRow(r)) {
-      const invested = insuranceInvestedTotal(r);
-      const val = num(r.currentValue);
-      const pl = val - invested;
+      const m = getInsuranceRowMetrics(r);
+      const invested = m.inv;
+      const val = m.value;
+      const pl = m.pl;
       const ccy = normalizeCcyForFx(String(r.ccy || "INR").toUpperCase());
-      return { r, invested, val, pl, ccy };
+      return { r, invested, val, pl, ccy, msub: m.sub || "" };
     }
     const qty = num(r.qty);
     const avg = num(r.avg);
@@ -5534,7 +5811,7 @@ function renderPfInsuranceTable(el) {
   );
   const body = rowObjs
     .map((o) => {
-      const { r, invested, val, pl, ccy } = o;
+      const { r, invested, val, pl, ccy, msub = "" } = o;
       const cls = pl >= 0 ? "plp" : "pln";
       const rid = pfRowId(r) || String(r.sym || "");
       if (isInsuranceAltRow(r)) {
@@ -5548,7 +5825,7 @@ function renderPfInsuranceTable(el) {
           <td class="pfNum">${esc(fmtMoney(ccy, ps))}</td>
           <td class="pfNum">${esc(fmtMoney(ccy, invested))}</td>
           <td class="pfNum">${esc(fmtN(num(r.growthPct), 2))}%</td>
-          <td class="pfNum">${esc(fmtMoney(ccy, val))}</td>
+          <td class="pfNum">${esc(fmtMoney(ccy, val))}${msub ? `<div class="muted sml" style="font-weight:400;max-width:12rem">${esc(msub)}</div>` : ""}</td>
           <td class="pfNum pfPlCol ${cls}">${esc(fmtMoney(ccy, pl))}</td>
           <td class="sml">${esc(formatCcyLabel(ccy))}</td>
           <td class="pfActCol"><button type="button" class="btn ghost smlBtn" data-pf-prem="${esc(rid)}">Log premium</button>
@@ -5573,7 +5850,7 @@ function renderPfInsuranceTable(el) {
     ? `<tr class="tot"><td colspan="6"><strong>Total</strong></td><td class="pfNum"><strong>${esc(fmtMoney(oneCcy, tVal))}</strong></td><td class="pfNum pfPlCol ${tPl >= 0 ? "plp" : "pln"}"><strong>${esc(fmtMoney(oneCcy, tPl))}</strong></td><td></td><td></td></tr>`
     : `<tr class="tot"><td colspan="11" class="muted">Several currencies in this provider — row amounts stay native. See the <strong>By ledger (€)</strong> block at the <strong>top</strong> of the page.</td></tr>`;
   el.innerHTML = `<div class="pfTableWrap" role="region" aria-label="Insurance policies"><table class="pfHoldingsTbl pfAltHoldingsTbl"><thead><tr>
-    <th>Policy</th><th>Policy #</th><th>Purchased</th><th class="pfNum">At purchase</th><th class="pfNum">Premiums paid</th><th class="pfNum">Invested total</th><th class="pfNum">Growth %</th><th class="pfNum">Current value</th><th class="pfNum pfPlCol">P/L</th><th>Ccy</th><th></th>
+    <th>Policy</th><th>Policy #</th><th>Purchased</th><th class="pfNum">At purchase</th><th class="pfNum">Premiums paid</th><th class="pfNum">Invested total</th><th class="pfNum">Growth % p.a.</th><th class="pfNum">Current value <span class="muted sml">(est.)</span></th><th class="pfNum pfPlCol">P/L</th><th>Ccy</th><th></th>
   </tr></thead><tbody>${body}${foot}</tbody></table></div>`;
   el.onclick = (e) => handlePfTableClick(e);
   pfClearTableMountState();
@@ -5595,11 +5872,12 @@ function renderPfFdTable(el) {
   }
   const rowObjs = rows.map((r) => {
     if (isFdAltRow(r)) {
-      const inv = num(r.principal);
-      const val = num(r.currentValue);
-      const pl = val - inv;
+      const m = getFdRowMetrics(r);
+      const inv = m.inv;
+      const val = m.value;
+      const pl = m.pl;
       const ccy = normalizeCcyForFx(String(r.ccy || "INR").toUpperCase());
-      return { r, inv, val, pl, ccy };
+      return { r, inv, val, pl, ccy, msub: m.sub || "" };
     }
     const qty = num(r.qty);
     const avg = num(r.avg);
@@ -5638,7 +5916,7 @@ function renderPfFdTable(el) {
   );
   const body = rowObjs
     .map((o) => {
-      const { r, inv, val, pl, ccy } = o;
+      const { r, inv, val, pl, ccy, msub = "" } = o;
       const cls = pl >= 0 ? "plp" : "pln";
       const rid = pfRowId(r) || String(r.sym || "");
       if (isFdAltRow(r)) {
@@ -5650,7 +5928,7 @@ function renderPfFdTable(el) {
           <td class="sml">${esc(r.openDate || "—")}</td>
           <td class="pfNum">${esc(fmtMoney(ccy, num(r.principal)))}</td>
           <td class="pfNum">${esc(fmtN(num(r.ratePct), 2))}%</td>
-          <td class="pfNum">${esc(fmtMoney(ccy, val))}</td>
+          <td class="pfNum">${esc(fmtMoney(ccy, val))}${msub ? `<div class="muted sml" style="font-weight:400;max-width:12rem">${esc(msub)}</div>` : ""}</td>
           <td class="sml">${esc(r.maturityDate || "—")}</td>
           <td>${esc(formatCcyLabel(ccy))}</td>
           <td class="pfNum pfPlCol ${cls}">${esc(fmtMoney(ccy, pl))}</td>
@@ -5671,7 +5949,7 @@ function renderPfFdTable(el) {
     ? `<tr class="tot"><td colspan="7"><strong>Total current value</strong></td><td class="pfNum"><strong>${esc(fmtMoney(oneCcy, tVal))}</strong></td><td colspan="2"></td><td class="pfNum pfPlCol ${tPl >= 0 ? "plp" : "pln"}"><strong>${esc(fmtMoney(oneCcy, tPl))}</strong></td><td></td></tr>`
     : `<tr class="tot"><td colspan="12" class="muted">Multiple currencies and countries — each row keeps its own currency; see the € total under the page title.</td></tr>`;
   el.innerHTML = `<div class="pfTableWrap" role="region" aria-label="Fixed deposits"><table class="pfHoldingsTbl pfAltHoldingsTbl"><thead><tr>
-    <th>Bank</th><th>Country</th><th>Deposit</th><th>Ref #</th><th>Open</th><th class="pfNum">Principal</th><th class="pfNum">Rate</th><th class="pfNum">Current value</th><th>Maturity</th><th>Ccy</th><th class="pfNum pfPlCol">P/L vs principal</th><th></th>
+    <th>Bank</th><th>Country</th><th>Deposit</th><th>Ref #</th><th>Open</th><th class="pfNum">Principal</th><th class="pfNum">Rate p.a.</th><th class="pfNum">Value <span class="muted sml">(est.)</span></th><th>Maturity</th><th>Ccy</th><th class="pfNum pfPlCol">P/L vs principal</th><th></th>
   </tr></thead><tbody>${body}${foot}</tbody></table></div>`;
   el.onclick = (e) => handlePfTableClick(e);
   pfClearTableMountState();
@@ -5951,11 +6229,9 @@ function brokerRowsForEurLedger(brokerId, rows) {
   if (brokerId === PF_INSURANCE) {
     return rows.map((r) => {
       if (isInsuranceAltRow(r)) {
-        const inv = insuranceInvestedTotal(r);
-        const last = num(r.currentValue);
+        const m = getInsuranceRowMetrics(r);
         const ccy = normalizeCcyForFx(String(r.ccy || "INR").toUpperCase());
-        const px = last > 0 ? last : inv;
-        return { ccy, qty: 1, avg: inv, last: px };
+        return { ccy, qty: 1, avg: m.inv, last: m.value > 0 ? m.value : m.inv };
       }
       return r;
     });
@@ -5963,11 +6239,9 @@ function brokerRowsForEurLedger(brokerId, rows) {
   if (brokerId === PF_FIXED_DEPOSIT) {
     return rows.map((r) => {
       if (isFdAltRow(r)) {
-        const inv = num(r.principal);
-        const last = num(r.currentValue);
+        const m = getFdRowMetrics(r);
         const ccy = normalizeCcyForFx(String(r.ccy || "INR").toUpperCase());
-        const px = last > 0 ? last : inv;
-        return { ccy, qty: 1, avg: inv, last: px };
+        return { ccy, qty: 1, avg: m.inv, last: m.value > 0 ? m.value : m.inv };
       }
       return r;
     });
@@ -6631,6 +6905,7 @@ function parseInsuranceCsv(text) {
   const iGr = hdrPick(Hnorm, ["growth", "avg growth", "growth rate", "average growth"], "loose");
   const iCur = hdrPick(Hnorm, ["current possible value", "current value", "surrender", "fund value"], "loose");
   const iPay = hdrPick(Hnorm, ["payments json", "payments"], "loose");
+  const iVm = hdrPick(Hnorm, ["insvalmode", "value mode", "ins mode", "valuation mode"], "loose");
   const fallbackCo = getPfInsuranceCompany();
   const out = [];
   for (const ln of lines.slice(1)) {
@@ -6650,12 +6925,22 @@ function parseInsuranceCsv(text) {
         payments = [];
       }
     }
+    let insValMode = "manual";
+    if (iVm >= 0) {
+      const s = String(c[iVm] || "").toLowerCase();
+      if (s.includes("compound") || s.includes("auto")) insValMode = "compound";
+      else if (s.includes("manual")) insValMode = "manual";
+    } else {
+      const gr = iGr >= 0 ? num(c[iGr]) : 0;
+      insValMode = gr > 0 ? "compound" : "manual";
+    }
     const rowObj = {
       policyName: pn,
       policyNo: iNo >= 0 ? String(c[iNo] || "").trim() : "",
       purchaseDate: iPd >= 0 ? String(c[iPd] || "").trim() : "",
       valueAtPurchase: iV0 >= 0 ? num(c[iV0]) : 0,
       growthPct: iGr >= 0 ? num(c[iGr]) : 0,
+      insValMode,
       currentValue: iCur >= 0 ? num(c[iCur]) : 0,
       ccy,
       insCompany,
@@ -6684,6 +6969,7 @@ function parseFdCsv(text) {
   const iCur = hdrPick(Hnorm, ["currentvalue", "current value", "maturity value"], "loose");
   const iMat = hdrPick(Hnorm, ["maturitydate", "maturity date", "maturity"], "loose");
   const iCtry = hdrPick(Hnorm, ["fdcountry", "country", "region", "nation"], "loose");
+  const iFdM = hdrPick(Hnorm, ["fdvalmode", "value mode", "fd mode", "accrual"], "loose");
   const out = [];
   for (const ln of lines.slice(1)) {
     const c = row(ln);
@@ -6694,6 +6980,14 @@ function parseFdCsv(text) {
     const pr = num(c[iPr]);
     if (!bank || !nm || !ccy || pr <= 0) continue;
     const cur = iCur >= 0 ? num(c[iCur]) : pr;
+    let fdValMode = "simple";
+    if (iFdM >= 0) {
+      const s = String(c[iFdM] || "").toLowerCase();
+      if (s.includes("manual")) fdValMode = "manual";
+      else if (s.includes("simple") || s.includes("auto")) fdValMode = "simple";
+    } else if (iCur >= 0 && cur > 0 && Math.abs(cur - pr) > 1e-3) {
+      fdValMode = "manual";
+    }
     const rowObj = {
       fdBank: bank,
       fdName: nm,
@@ -6701,7 +6995,8 @@ function parseFdCsv(text) {
       openDate: iOpen >= 0 ? String(c[iOpen] || "").trim() : "",
       principal: pr,
       ratePct: iRate >= 0 ? num(c[iRate]) : 0,
-      currentValue: cur > 0 ? cur : pr,
+      fdValMode,
+      currentValue: fdValMode === "manual" && cur > 0 ? cur : 0,
       maturityDate: iMat >= 0 ? String(c[iMat] || "").trim() : "",
       ccy,
       fdCountry: iCtry >= 0 ? String(c[iCtry] || "").trim() : "",
