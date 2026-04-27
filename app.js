@@ -339,14 +339,85 @@ function listScheduledInstalmentsUpTo(schedule, untilD) {
 }
 
 /**
+ * Resolves a row's premium schedule for calculations (does not mutate `r`).
+ * Fills missing anchor / base from purchase + value at purchase when possible.
+ * @param {object} r
+ * @returns {object | null}
+ */
+function resolvePremiumScheduleForCalc(r) {
+  const sched0 = r?.premiumSchedule;
+  if (!sched0 || typeof sched0 !== "object") return null;
+  if (sched0.enabled === false || String(sched0.enabled).toLowerCase() === "false") return null;
+  const freq = String(sched0.frequency || "").trim().toLowerCase();
+  if (freq !== "monthly" && freq !== "yearly") return null;
+  let anchorYmd = String(sched0.anchorYmd || "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(anchorYmd)) {
+    const pur = String(r?.purchaseDate || "").trim().slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(pur)) anchorYmd = pur;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(anchorYmd)) return null;
+  let baseAmount = num(sched0.baseAmount);
+  if (!(baseAmount > 0)) baseAmount = num(r?.valueAtPurchase);
+  if (!(baseAmount > 0)) return null;
+  const ad = parseLocalYmdToDate(anchorYmd);
+  const dayOfMonth = Math.max(1, Math.min(31, Math.floor(num(sched0.dayOfMonth)) || (ad ? ad.getDate() : 1)));
+  const monthOfYear = Math.max(1, Math.min(12, Math.floor(num(sched0.monthOfYear)) || (ad ? ad.getMonth() + 1 : 1)));
+  const maxRaw = sched0.maxInstalments;
+  const maxInstalments =
+    maxRaw != null && String(maxRaw).trim() !== "" ? Math.max(0, Math.floor(num(maxRaw))) : null;
+  return {
+    enabled: true,
+    frequency: freq,
+    anchorYmd,
+    dayOfMonth,
+    monthOfYear,
+    baseAmount,
+    annualStepPct: num(sched0.annualStepPct),
+    maxInstalments,
+  };
+}
+
+/** @param {object} row @returns {boolean} */
+function applyInsuranceQuickMonthlySchedule(row) {
+  if (!row || !isInsuranceAltRow(row)) return false;
+  const pdt = String(row.purchaseDate || "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(pdt)) return false;
+  const base = num(row.valueAtPurchase);
+  if (!(base > 0)) return false;
+  const dt = parseLocalYmdToDate(pdt);
+  if (!dt) return false;
+  row.premiumSchedule = {
+    enabled: true,
+    frequency: "monthly",
+    anchorYmd: pdt,
+    dayOfMonth: dt.getDate(),
+    monthOfYear: dt.getMonth() + 1,
+    baseAmount: base,
+    annualStepPct: 0,
+    maxInstalments: null,
+  };
+  return true;
+}
+
+/** Guess insurer from policy title (for UI hints only). @param {unknown} nm */
+function insuranceLikelyCoFromName(nm) {
+  const n = String(nm || "").toLowerCase();
+  if (n.includes("allianz")) return "allianz_retirement";
+  if (n.includes("birla") || n.includes("aditya")) return "aditya_birla";
+  if (n.includes("sbi") && n.includes("life")) return "sbi_life";
+  if (n.includes("vrk")) return "vrk_retirement";
+  return null;
+}
+
+/**
  * Auto instalments counted for invested total / compound, after skipping periods already covered by Log premium.
  * @param {object} r
  * @param {Date} [untilD]
  * @returns {{ ymd: string, amount: number }[]}
  */
 function getInsuranceAutoScheduledPremiums(r, untilD) {
-  const sched = r?.premiumSchedule;
-  if (!sched || !sched.enabled) return [];
+  const sched = resolvePremiumScheduleForCalc(r);
+  if (!sched) return [];
   const until = untilD instanceof Date ? untilD : new Date();
   until.setHours(0, 0, 0, 0);
   const dedup = insuranceManualInstalmentDedupKeys(r, sched);
@@ -634,6 +705,30 @@ function migratePortfolioBundleShape(bundle) {
         ) {
           sch.enabled = true;
           changed = true;
+        }
+        const fres = resolvePremiumScheduleForCalc(r);
+        if (fres) {
+          let patched = false;
+          if (!String(sch.anchorYmd || "").trim() && fres.anchorYmd) {
+            sch.anchorYmd = fres.anchorYmd;
+            patched = true;
+          }
+          if (!(num(sch.baseAmount) > 0) && fres.baseAmount > 0) {
+            sch.baseAmount = fres.baseAmount;
+            patched = true;
+          }
+          if (!(Math.floor(num(sch.dayOfMonth)) >= 1)) {
+            sch.dayOfMonth = fres.dayOfMonth;
+            patched = true;
+          }
+          if (
+            String(sch.frequency || "").toLowerCase().includes("year") &&
+            !(Math.floor(num(sch.monthOfYear)) >= 1)
+          ) {
+            sch.monthOfYear = fres.monthOfYear;
+            patched = true;
+          }
+          if (patched) changed = true;
         }
       }
     }
@@ -2935,13 +3030,17 @@ function wire() {
         bundle.brokers[PF_INSURANCE].rows.push(row);
         savePfBundle(bundle);
         renderPf();
+        const schFreqEl = String(val("fPolSchFreq") || "off").toLowerCase();
+        const wantedAuto = schFreqEl !== "off" && schFreqEl !== "none" && Boolean(schFreqEl);
         let msg = `Added policy → ${PF_INS_CO_LABEL[getPfInsuranceCompany()]}`;
-        if (row.premiumSchedule?.enabled) {
+        if (row.premiumSchedule && resolvePremiumScheduleForCalc(row)) {
           const td = new Date();
           td.setHours(0, 0, 0, 0);
           const nAut = getInsuranceAutoScheduledPremiums(row, td).length;
           const invTot = insuranceInvestedTotal(row);
           msg += ` · ${nAut} auto instalment(s) through today · invested total ≈ ${fmtMoney(ccy, invTot)}`;
+        } else if (wantedAuto) {
+          msg += ` — auto instalments were NOT saved (need purchase date + instalment or value at purchase, or use "Monthly from purchase" on the row).`;
         }
         status(msg);
         return;
@@ -6125,6 +6224,24 @@ function handlePfTableClick(ev) {
     status("Auto instalment schedule updated");
     return;
   }
+  const schq = t.closest("[data-pf-schq]");
+  if (schq instanceof HTMLElement && schq.dataset.pfSchq) {
+    const rid = schq.dataset.pfSchq;
+    const bundle = loadPfBundle();
+    const row = bundle.brokers[PF_INSURANCE].rows.find((r) => pfRowId(r) === rid || String(r.sym || "") === rid);
+    if (!row || !isInsuranceAltRow(row)) return;
+    if (!applyInsuranceQuickMonthlySchedule(row)) {
+      status("Quick monthly needs a valid purchase date and value at purchase > 0");
+      return;
+    }
+    savePfBundle(bundle);
+    renderPf();
+    const td = new Date();
+    td.setHours(0, 0, 0, 0);
+    const nAut = getInsuranceAutoScheduledPremiums(row, td).length;
+    status(`Monthly schedule saved · ${nAut} auto instalment(s) through today`);
+    return;
+  }
   const fdAdd = t.closest("[data-pf-fdadd]");
   if (fdAdd instanceof HTMLElement && fdAdd.dataset.pfFdadd) {
     if (getActiveBroker() !== PF_FIXED_DEPOSIT) return;
@@ -6312,19 +6429,39 @@ function renderPfInsuranceTable(el) {
         todayR.setHours(0, 0, 0, 0);
         const autoPrem = getInsuranceAutoScheduledPremiums(r, todayR);
         const autoSum = autoPrem.reduce((s, x) => s + num(x.amount), 0);
-        const schOn = Boolean(r.premiumSchedule?.enabled);
+        const schEffective = Boolean(resolvePremiumScheduleForCalc(r));
+        const schRaw = r.premiumSchedule && typeof r.premiumSchedule === "object";
+        const schOn =
+          Boolean(schRaw) &&
+          String(r.premiumSchedule.frequency || "").trim() !== "" &&
+          r.premiumSchedule.enabled !== false &&
+          String(r.premiumSchedule.enabled).toLowerCase() !== "false";
+        const likely = insuranceLikelyCoFromName(r.policyName);
+        const coHint =
+          likely && likely !== co
+            ? `<div class="muted sml" style="font-weight:400;max-width:14rem">This row is filed under <strong>${esc(PF_INS_CO_LABEL[co])}</strong>; the name suggests <strong>${esc(PF_INS_CO_LABEL[likely])}</strong> — switch that sub-tab before adding next time, or ignore if intentional.</div>`
+            : "";
+        const noAutoHint =
+          !schEffective && autoSum <= 0
+            ? `<div class="muted sml" style="font-weight:400;max-width:14rem">No auto instalments yet — click <strong>Monthly from purchase</strong> (uses date + value at purchase) or <strong>Auto schedule…</strong>.</div>`
+            : "";
+        const canQuick =
+          !schEffective &&
+          /^\d{4}-\d{2}-\d{2}$/.test(String(r.purchaseDate || "").trim().slice(0, 10)) &&
+          num(r.valueAtPurchase) > 0;
         return `<tr>
-          <td class="sml"><strong>${esc(r.policyName || "—")}</strong></td>
+          <td class="sml"><strong>${esc(r.policyName || "—")}</strong>${coHint}</td>
           <td class="sml">${esc(r.policyNo || "—")}</td>
           <td class="sml">${esc(r.purchaseDate || "—")}</td>
           <td class="pfNum">${esc(fmtMoney(ccy, num(r.valueAtPurchase)))}</td>
-          <td class="pfNum">${esc(fmtMoney(ccy, ps))}${autoSum > 0 ? `<div class="muted sml" style="font-weight:400">+ ${esc(fmtMoney(ccy, autoSum))} auto</div>` : ""}</td>
+          <td class="pfNum">${esc(fmtMoney(ccy, ps))}${autoSum > 0 ? `<div class="muted sml" style="font-weight:400">+ ${esc(fmtMoney(ccy, autoSum))} auto</div>` : ""}${noAutoHint}</td>
           <td class="pfNum">${esc(fmtMoney(ccy, invested))}</td>
           <td class="pfNum">${esc(fmtN(num(r.growthPct), 2))}%</td>
           <td class="pfNum">${esc(fmtMoney(ccy, val))}${msub ? `<div class="muted sml" style="font-weight:400;max-width:12rem">${esc(msub)}</div>` : ""}</td>
           <td class="pfNum pfPlCol ${cls}">${esc(fmtMoney(ccy, pl))}</td>
           <td class="sml">${esc(formatCcyLabel(ccy))}</td>
           <td class="pfActCol"><button type="button" class="btn ghost smlBtn" data-pf-prem="${esc(rid)}">Log premium</button>
+            ${canQuick ? `<button type="button" class="btn ghost smlBtn" data-pf-schq="${esc(rid)}">Monthly from purchase</button>` : ""}
             <button type="button" class="btn ghost smlBtn" data-pf-sched="${esc(rid)}">Auto schedule…</button>
             ${schOn ? `<button type="button" class="btn ghost smlBtn" data-pf-schrm="${esc(rid)}">Clear auto</button>` : ""}
             <button type="button" class="btn ghost smlBtn" data-pf-rm="${esc(rid)}">Remove</button>
