@@ -579,7 +579,7 @@ function getFdRowMetrics(r) {
     inv,
     pl: ret,
     principalNow,
-    sub: `Simple int. · ${days}d · +${fmtN(interest, 2)} ${ccyU}${movn ? ` · ${movn} principal change(s)` : ""}`,
+    sub: `Simple · ${days}d · +${fmtN(interest, 2)} ${ccyU}${movn ? ` · ${movn} chg` : ""}`,
     interest,
     days,
     mode: "simple",
@@ -607,9 +607,7 @@ function getInsuranceRowMetrics(r) {
       value: v,
       inv,
       pl: ret,
-      sub:
-        (g <= 0 && !isManual ? "Set growth % or use manual value mode" : "Manual or no growth") +
-        ` · return (est.) ${fmtMoney(ccyU, ret)}`,
+      sub: (g <= 0 && !isManual ? "Set growth % or use manual value mode" : "Manual or no growth") + ` · ${fmtMoney(ccyU, ret)} vs paid-in`,
       mode: "manual",
     };
   }
@@ -633,7 +631,7 @@ function getInsuranceRowMetrics(r) {
     value: v,
     inv,
     pl: ret,
-    sub: `Comp. (daily) on flow · p.a. ${fmtN(g, 2)}%${nPay ? ` · ${nPay} logged` : ""}${autoBit} · return (est.) ${fmtMoney(ccyU, ret)}`,
+    sub: `Daily compound · ${fmtN(g, 2)}% p.a.${nPay ? ` · ${nPay} logged` : ""}${autoBit}`,
     mode: "compound",
   };
 }
@@ -6439,33 +6437,36 @@ function renderPfInsuranceTable(el) {
         const likely = insuranceLikelyCoFromName(r.policyName);
         const coHint =
           likely && likely !== co
-            ? `<div class="muted sml" style="font-weight:400;max-width:14rem">This row is filed under <strong>${esc(PF_INS_CO_LABEL[co])}</strong>; the name suggests <strong>${esc(PF_INS_CO_LABEL[likely])}</strong> — switch that sub-tab before adding next time, or ignore if intentional.</div>`
+            ? `<details class="pfInlineHint"><summary>Provider</summary><div class="muted sml">Filed as <strong>${esc(PF_INS_CO_LABEL[co])}</strong>; title suggests <strong>${esc(PF_INS_CO_LABEL[likely])}</strong>.</div></details>`
             : "";
         const noAutoHint =
           !schEffective && autoSum <= 0
-            ? `<div class="muted sml" style="font-weight:400;max-width:14rem">No auto instalments yet — click <strong>Monthly from purchase</strong> (uses date + value at purchase) or <strong>Auto schedule…</strong>.</div>`
+            ? `<details class="pfInlineHint"><summary>Auto pay</summary><div class="muted sml">Use <strong>Monthly</strong> or <strong>Schedule</strong>.</div></details>`
             : "";
         const canQuick =
           !schEffective &&
           /^\d{4}-\d{2}-\d{2}$/.test(String(r.purchaseDate || "").trim().slice(0, 10)) &&
           num(r.valueAtPurchase) > 0;
+        const pName = String(r.policyName || "—");
+        const premSub = autoSum > 0 ? `<span class="pfCellSub">+ ${esc(fmtMoney(ccy, autoSum))} auto</span>` : "";
+        const valSub = msub ? `<span class="pfCellSub" title="${esc(msub)}">${esc(msub)}</span>` : "";
         return `<tr>
-          <td class="sml"><strong>${esc(r.policyName || "—")}</strong>${coHint}</td>
+          <td class="sml pfTdPol" title="${esc(pName)}"><strong>${esc(pName)}</strong>${coHint}</td>
           <td class="sml">${esc(r.policyNo || "—")}</td>
           <td class="sml">${esc(r.purchaseDate || "—")}</td>
-          <td class="pfNum">${esc(fmtMoney(ccy, num(r.valueAtPurchase)))}</td>
-          <td class="pfNum">${esc(fmtMoney(ccy, ps))}${autoSum > 0 ? `<div class="muted sml" style="font-weight:400">+ ${esc(fmtMoney(ccy, autoSum))} auto</div>` : ""}${noAutoHint}</td>
-          <td class="pfNum">${esc(fmtMoney(ccy, invested))}</td>
-          <td class="pfNum">${esc(fmtN(num(r.growthPct), 2))}%</td>
-          <td class="pfNum">${esc(fmtMoney(ccy, val))}${msub ? `<div class="muted sml" style="font-weight:400;max-width:12rem">${esc(msub)}</div>` : ""}</td>
-          <td class="pfNum pfPlCol ${cls}">${esc(fmtMoney(ccy, pl))}</td>
+          <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, num(r.valueAtPurchase)))}</span></div></td>
+          <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, ps))}</span>${premSub}${noAutoHint}</div></td>
+          <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, invested))}</span></div></td>
+          <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtN(num(r.growthPct), 2))}%</span></div></td>
+          <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, val))}</span>${valSub}</div></td>
+          <td class="pfNum pfPlCol ${cls}"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, pl))}</span></div></td>
           <td class="sml">${esc(formatCcyLabel(ccy))}</td>
-          <td class="pfActCol"><button type="button" class="btn ghost smlBtn" data-pf-prem="${esc(rid)}">Log premium</button>
-            ${canQuick ? `<button type="button" class="btn ghost smlBtn" data-pf-schq="${esc(rid)}">Monthly from purchase</button>` : ""}
-            <button type="button" class="btn ghost smlBtn" data-pf-sched="${esc(rid)}">Auto schedule…</button>
-            ${schOn ? `<button type="button" class="btn ghost smlBtn" data-pf-schrm="${esc(rid)}">Clear auto</button>` : ""}
-            <button type="button" class="btn ghost smlBtn" data-pf-rm="${esc(rid)}">Remove</button>
-            <span class="muted sml">${pc} logged${autoPrem.length ? ` · ${autoPrem.length} auto` : ""}</span></td>
+          <td class="pfActCol"><div class="pfActBtns"><button type="button" class="btn ghost smlBtn" data-pf-prem="${esc(rid)}" title="Log a premium payment">Premium</button>
+            ${canQuick ? `<button type="button" class="btn ghost smlBtn" data-pf-schq="${esc(rid)}" title="Monthly schedule from purchase date and value at purchase">Monthly</button>` : ""}
+            <button type="button" class="btn ghost smlBtn" data-pf-sched="${esc(rid)}" title="Edit auto instalment schedule">Schedule</button>
+            ${schOn ? `<button type="button" class="btn ghost smlBtn" data-pf-schrm="${esc(rid)}" title="Remove auto instalment schedule">Clear</button>` : ""}
+            <button type="button" class="btn ghost smlBtn" data-pf-rm="${esc(rid)}" title="Remove this policy row">Remove</button></div>
+            <span class="pfActMeta muted">${pc} logged${autoPrem.length ? ` · ${autoPrem.length} auto` : ""}</span></td>
         </tr>`;
       }
       const href = instrumentHref(r.sym, r.ex, r.nm || "", r.ccy, { fromPf: true });
@@ -6484,8 +6485,10 @@ function renderPfInsuranceTable(el) {
   const foot = !multi && oneCcy
     ? `<tr class="tot"><td colspan="6"><strong>Total</strong></td><td class="pfNum"><strong>${esc(fmtMoney(oneCcy, tVal))}</strong></td><td class="pfNum pfPlCol ${tPl >= 0 ? "plp" : "pln"}"><strong>${esc(fmtMoney(oneCcy, tPl))}</strong></td><td></td><td></td></tr>`
     : `<tr class="tot"><td colspan="11" class="muted">Several currencies in this provider — row amounts stay native. See the <strong>By ledger (€)</strong> block at the <strong>top</strong> of the page.</td></tr>`;
-  el.innerHTML = `<div class="pfTableWrap" role="region" aria-label="Insurance policies"><table class="pfHoldingsTbl pfAltHoldingsTbl"><thead><tr>
-    <th>Policy</th><th>Policy #</th><th>Purchased</th><th class="pfNum">At purchase</th><th class="pfNum">Premiums paid</th><th class="pfNum">Invested total</th><th class="pfNum">Growth % p.a.</th><th class="pfNum">Current value <span class="muted sml">(est.)</span></th><th class="pfNum pfPlCol">Return (est.)</th><th>Ccy</th><th></th>
+  el.innerHTML = `<div class="pfTableWrap" role="region" aria-label="Insurance policies"><table class="pfHoldingsTbl pfAltHoldingsTbl pfAltLedgerTbl"><colgroup>
+    <col class="pfAltColPol" /><col class="pfAltColNo" /><col class="pfAltColDate" /><col class="pfAltColNum" /><col class="pfAltColNumWide" /><col class="pfAltColNum" /><col class="pfAltColNumSm" /><col class="pfAltColVal" /><col class="pfAltColPl" /><col class="pfAltColCcy" /><col class="pfAltColAct" />
+  </colgroup><thead><tr>
+    <th class="pfThWrap">Policy</th><th class="pfThWrap">Policy #</th><th class="pfThWrap">Bought</th><th class="pfNum">At purchase</th><th class="pfNum pfThWrap">Premiums</th><th class="pfNum pfThWrap">Invested</th><th class="pfNum pfThWrap">Growth<span class="pfThSub">% p.a.</span></th><th class="pfNum pfThWrap">Value<span class="pfThSub">est.</span></th><th class="pfNum pfPlCol pfThWrap">Return<span class="pfThSub">est.</span></th><th class="pfThWrap">Ccy</th><th class="pfActCol pfThWrap">Actions</th>
   </tr></thead><tbody>${body}${foot}</tbody></table></div>`;
   el.onclick = (e) => handlePfTableClick(e);
   pfClearTableMountState();
@@ -6559,22 +6562,28 @@ function renderPfFdTable(el) {
         const prOpen = num(r.principal);
         const prBook = typeof pBook0 === "number" ? pBook0 : prOpen;
         const movc = Array.isArray(r.fdMovements) ? r.fdMovements.length : 0;
+        const fdNm = String(r.fdName || "—");
+        const prSub =
+          movc > 0 || Math.abs(prBook - prOpen) > 1e-6
+            ? `<span class="pfCellSub" title="Opening deposit">opened ${esc(fmtMoney(ccy, prOpen))}</span>`
+            : "";
+        const fdValSub = msub ? `<span class="pfCellSub" title="${esc(msub)}">${esc(msub)}</span>` : "";
         return `<tr>
           <td class="sml">${esc(r.fdBank || "—")}</td>
           <td class="sml">${esc(r.fdCountry || "—")}</td>
-          <td class="sml"><strong>${esc(r.fdName || "—")}</strong></td>
+          <td class="sml pfTdPol" title="${esc(fdNm)}"><strong>${esc(fdNm)}</strong></td>
           <td class="sml">${esc(r.fdRef || "—")}</td>
           <td class="sml">${esc(r.openDate || "—")}</td>
-          <td class="pfNum">${esc(fmtMoney(ccy, prBook))}${movc > 0 || Math.abs(prBook - prOpen) > 1e-6 ? `<div class="muted sml" style="font-weight:400">opened ${esc(fmtMoney(ccy, prOpen))}</div>` : ""}</td>
-          <td class="pfNum">${esc(fmtN(num(r.ratePct), 2))}%</td>
-          <td class="pfNum">${esc(fmtMoney(ccy, val))}${msub ? `<div class="muted sml" style="font-weight:400;max-width:12rem">${esc(msub)}</div>` : ""}</td>
+          <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, prBook))}</span>${prSub}</div></td>
+          <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtN(num(r.ratePct), 2))}%</span></div></td>
+          <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, val))}</span>${fdValSub}</div></td>
           <td class="sml">${esc(r.maturityDate || "—")}</td>
           <td>${esc(formatCcyLabel(ccy))}</td>
-          <td class="pfNum pfPlCol ${cls}">${esc(fmtMoney(ccy, pl))}</td>
-          <td class="pfActCol"><button type="button" class="btn ghost smlBtn" data-pf-fdadd="${esc(rid)}">Add principal</button>
-            <button type="button" class="btn ghost smlBtn" data-pf-fdwd="${esc(rid)}">Withdraw</button>
-            <button type="button" class="btn ghost smlBtn" data-pf-rm="${esc(rid)}">Remove</button>
-            ${movc ? `<span class="muted sml">${movc} movement(s)</span>` : ""}</td>
+          <td class="pfNum pfPlCol ${cls}"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, pl))}</span></div></td>
+          <td class="pfActCol"><div class="pfActBtns"><button type="button" class="btn ghost smlBtn" data-pf-fdadd="${esc(rid)}" title="Add to principal">Add</button>
+            <button type="button" class="btn ghost smlBtn" data-pf-fdwd="${esc(rid)}" title="Withdraw from principal">Withdraw</button>
+            <button type="button" class="btn ghost smlBtn" data-pf-rm="${esc(rid)}" title="Remove this deposit">Remove</button></div>
+            ${movc ? `<span class="pfActMeta muted">${movc} mvmt</span>` : ""}</td>
         </tr>`;
       }
       const href = instrumentHref(r.sym, r.ex, r.nm || "", r.ccy, { fromPf: true });
@@ -6590,8 +6599,10 @@ function renderPfFdTable(el) {
   const foot = !multi && oneCcy
     ? `<tr class="tot"><td colspan="7"><strong>Total current value</strong></td><td class="pfNum"><strong>${esc(fmtMoney(oneCcy, tVal))}</strong></td><td colspan="2"></td><td class="pfNum pfPlCol ${tPl >= 0 ? "plp" : "pln"}"><strong>${esc(fmtMoney(oneCcy, tPl))}</strong></td><td></td></tr>`
     : `<tr class="tot"><td colspan="12" class="muted">Multiple currencies and countries — each row keeps its own currency; see the € total under the page title.</td></tr>`;
-  el.innerHTML = `<div class="pfTableWrap" role="region" aria-label="Fixed deposits"><table class="pfHoldingsTbl pfAltHoldingsTbl"><thead><tr>
-    <th>Bank</th><th>Country</th><th>Deposit</th><th>Ref #</th><th>Open</th><th class="pfNum">Principal <span class="muted sml">(book)</span></th><th class="pfNum">Rate p.a.</th><th class="pfNum">Value <span class="muted sml">(est.)</span></th><th>Maturity</th><th>Ccy</th><th class="pfNum pfPlCol">Return (est.)</th><th></th>
+  el.innerHTML = `<div class="pfTableWrap" role="region" aria-label="Fixed deposits"><table class="pfHoldingsTbl pfAltHoldingsTbl pfAltLedgerTbl pfFdLedger"><colgroup>
+    <col class="pfFdColBank" /><col class="pfFdColCtry" /><col class="pfFdColNm" /><col class="pfFdColRef" /><col class="pfFdColOpen" /><col class="pfFdColPrin" /><col class="pfFdColRate" /><col class="pfFdColVal" /><col class="pfFdColMat" /><col class="pfFdColCcy" /><col class="pfFdColPl" /><col class="pfFdColAct" />
+  </colgroup><thead><tr>
+    <th class="pfThWrap">Bank</th><th class="pfThWrap">Country</th><th class="pfThWrap">Deposit</th><th class="pfThWrap">Ref</th><th class="pfThWrap">Open</th><th class="pfNum pfThWrap">Principal<span class="pfThSub">book</span></th><th class="pfNum pfThWrap">Rate<span class="pfThSub">p.a.</span></th><th class="pfNum pfThWrap">Value<span class="pfThSub">est.</span></th><th class="pfThWrap">Maturity</th><th class="pfThWrap">Ccy</th><th class="pfNum pfPlCol pfThWrap">Return<span class="pfThSub">est.</span></th><th class="pfActCol pfThWrap">Actions</th>
   </tr></thead><tbody>${body}${foot}</tbody></table></div>`;
   el.onclick = (e) => handlePfTableClick(e);
   pfClearTableMountState();
