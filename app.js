@@ -2135,18 +2135,29 @@ function portfolioHtml() {
       <h2 class="h2" id="pfCloudHd">Cloud portfolio (all your devices + family)</h2>
       <p id="pfServerHealthHint" class="sml" role="status" aria-live="polite" style="margin:0 0 8px 0"></p>
       <p id="pfOwnerCloudStatusLine" class="sml" style="margin:0 0 8px 0"></p>
-      <p class="sml muted" style="margin:0 0 12px 0">Use the <strong>same</strong> values as <code>SHARED_PORTFOLIO_READ_TOKEN</code> and <code>SHARED_PORTFOLIO_WRITE_TOKEN</code> in your host (e.g. Render). They are kept <strong>only in this browser</strong>. After you connect, the app <strong>loads the server copy</strong> and <strong>auto-uploads</strong> when you change holdings, so you and your family use the same snapshot—no waiting for a manual publish for day-to-day edits. Use <strong>Publish for family (server)</strong> when you want a guaranteed upload after a big import.</p>
+      <details class="card2 mt" style="margin:0 0 14px 0;padding:10px 12px" id="pfCloudHelpDetails">
+        <summary class="sml" style="cursor:pointer;font-weight:600">Simple steps — what to do (no jargon)</summary>
+        <ol class="sml" style="margin:10px 0 0 0;padding-left:1.2em;max-width:52em;line-height:1.5">
+          <li><strong>Where the secrets live</strong> — You host this app on a service such as <strong>Render</strong>. Log in there → open <strong>your</strong> web app → <strong>Environment</strong> (or “Environment variables”). You will see two long passwords. In our code they are named with “READ” and “WRITE”. You do <em>not</em> have to understand the names; just copy the <strong>values</strong> exactly as they are.</li>
+          <li><strong>On this same screen below</strong> — Paste the <strong>read</strong> value in the first box, the <strong>write</strong> value in the second box, then press <strong>Save &amp; load from server</strong>. This device will download what is stored for your family. Your numbers are only saved in <strong>this</strong> browser until you do this.</li>
+          <li><strong>Each phone, tablet, or browser</strong> (Safari, Chrome, Brave, …) — Do the same two pastes on that device once. Nothing you do here can delete the app on the server; worst case, that browser shows an error and you try again with fresh copies from Render.</li>
+          <li><strong>When your portfolio changes</strong> — Edits (after you are “Connected”) sync to the server automatically. For a big import you can also use <strong>Publish for family (server)</strong> at the bottom. Family <strong>never</strong> sees your two passwords. After you are connected here, press <strong>Copy family link</strong> above to put the correct read-only link in your clipboard for them.</li>
+          <li><strong>If the app warns you about “ephemeral” storage</strong> — The free host may forget a file when it sleeps. A technical person can add <strong>GitHub Gist</strong> in Render so your published file survives; your <code>.env.example</code> in the project explains the two variables. You do not need to do that yourself to test the app.</li>
+        </ol>
+      </details>
+      <p class="sml muted" style="margin:0 0 12px 0">The two values come from the same place as <code>SHARED_PORTFOLIO_READ_TOKEN</code> and <code>SHARED_PORTFOLIO_WRITE_TOKEN</code> on your host. They stay <strong>only in this browser</strong>.</p>
       <div class="grid2 mt" style="gap:12px;">
         <label class="lbl" style="margin:0">Read token
-          <input class="in" id="pfCloudReadIn" type="password" autocomplete="off" spellcheck="false" placeholder="from Render" />
+          <input class="in" id="pfCloudReadIn" type="password" autocomplete="off" spellcheck="false" placeholder="paste from your host" />
         </label>
         <label class="lbl" style="margin:0">Write key
-          <input class="in" id="pfCloudWriteIn" type="password" autocomplete="off" spellcheck="false" placeholder="from Render" />
+          <input class="in" id="pfCloudWriteIn" type="password" autocomplete="off" spellcheck="false" placeholder="paste from your host" />
         </label>
       </div>
       <div class="rowgap mt" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
         <button type="button" class="btn" id="btnPfCloudSave">Save &amp; load from server</button>
         <button type="button" class="btn ghost" id="btnPfCloudReload">Reload from server</button>
+        <button type="button" class="btn ghost" id="btnPfCopyFamilyLink" title="Copies a read-only link to send in a private message">Copy family link</button>
         <button type="button" class="btn ghost" id="btnPfCloudDisc">Disconnect on this device</button>
       </div>
     </section>
@@ -2455,6 +2466,27 @@ function wire() {
       }
       status("Cloud disconnected on this device", document.documentElement.dataset.theme || "");
       renderPf();
+    });
+    $("btnPfCopyFamilyLink")?.addEventListener("click", async () => {
+      const t = getOwnerCloudReadT();
+      if (!t) {
+        status("Save your read token on this device first (Save & load from server), then you can copy the family link.");
+        return;
+      }
+      const u = `${location.origin}/#/portfolio?view=family&token=${encodeURIComponent(t)}`;
+      const th = document.documentElement.dataset.theme || "";
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(u);
+        } else {
+          throw new Error("no clipboard");
+        }
+        status("Read-only family link copied — only send in private. Family uses Refresh for prices.", th);
+      } catch {
+        const ok = window.prompt("Copy this read-only family link (send in private only):", u);
+        if (ok === null) status("Copy cancelled", th);
+        else status("If you need to, select the link above and copy it manually", th);
+      }
     });
     $("btnImp")?.addEventListener("click", async () => {
       const f = $("csv")?.files?.[0];
