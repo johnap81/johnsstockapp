@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>John’sStockApp — Help &amp; click guide</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <style>
+      body {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 24px 16px 48px;
+      }
+      h1 {
+        font-size: 1.35rem;
+      }
+      h2 {
+        font-size: 1.05rem;
+        margin-top: 1.75rem;
+        scroll-margin-top: 16px;
+      }
+      ul,
+      ol {
+        line-height: 1.65;
+        color: var(--m, #666);
+      }
+      .box {
+        border: 1px solid var(--bd, #333);
+        border-radius: 12px;
+        padding: 14px 16px;
+        margin: 14px 0;
+        background: var(--card, rgba(255, 255, 255, 0.05));
+      }
+      .toc {
+        list-style: none;
+        padding: 0;
+        margin: 12px 0 0;
+      }
+      .toc li {
+        margin: 8px 0;
+      }
+      .toc a {
+        font-weight: 700;
+      }
+      .btnrow {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 12px;
+      }
+      .btnrow a {
+        display: inline-block;
+        padding: 8px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--bd, #333);
+        background: color-mix(in srgb, var(--a, #5eead4) 14%, transparent);
+        color: var(--tx, #fff);
+        text-decoration: none;
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .btnrow a:hover {
+        filter: brightness(1.08);
+      }
+      .note {
+        font-size: 13px;
+        color: var(--m, #888);
+        margin-top: 10px;
+        line-height: 1.5;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>John’sStockApp — Help &amp; click guide</h1>
+    <p class="note">
+      Open this page from the running app so the buttons below use the <strong>correct port</strong> (e.g. after you start the server, use
+      <a href="/README.html">this same tab’s address bar</a> — not a saved <code>file:///</code> copy).
+    </p>
+
+    <div class="box">
+      <strong>Jump to</strong>
+      <ul class="toc">
+        <li><a href="#python3-explained">What is <code>python3</code>?</a> (plain English)</li>
+        <li><a href="#checklist-daily">Every time you use the app — 4 clicks</a></li>
+        <li><a href="#restart-server">Start / restart the server</a></li>
+        <li><a href="#check-health">Check the server is really yours</a></li>
+        <li><a href="#env-file">Edit <code>.env</code> (keys &amp; port)</a></li>
+        <li><a href="#troubleshooting">If something breaks</a></li>
+      </ul>
+      <div class="btnrow" aria-label="Quick actions on this origin">
+        <a href="/">Open app home</a>
+        <a href="/api/health">Open API health check</a>
+        <a href="/#/search">Go to Search tab</a>
+        <a href="/#/watchlist">Go to Watchlist tab</a>
+        <a href="/#/portfolio">Go to Portfolio tab</a>
+      </div>
+      <p class="note" style="margin-top: 14px">
+        On the app itself, look <strong>directly under the title row</strong> for a <strong>wide bright green button</strong> (API health). The same
+        green block is also copied <strong>at the top of Search, Portfolio, and Notes</strong> so you always have one in the main white/dark card.
+      </p>
+      <p class="note" style="margin-top: 10px">
+        If you <strong>never</strong> see updates (old buttons, old version number): in Chrome go to
+        <strong>View → Developer → Developer Tools</strong>, then the <strong>Application</strong> tab → <strong>Service workers</strong> →
+        <strong>Unregister</strong>, then close the tab and open the app again from Terminal’s URL. Or try a private window once.
+      </p>
+    </div>
+
+    <h2 id="python3-explained">What is <code>python3</code>?</h2>
+    <div class="box">
+      <p style="margin: 0 0 10px; line-height: 1.6">
+        <strong><code>python3</code> is not a label on the screen.</strong> It is the name of a <strong>program</strong> installed on your Mac
+        (like Safari or Calculator). You run it by <strong>typing its name in Terminal</strong> and pressing <strong>Enter</strong>.
+      </p>
+      <p style="margin: 0 0 10px; line-height: 1.6">
+        In this project, the full command is <code>python3 server.py</code> — that means: “run Python, and give it the file
+        <code>server.py</code>.” That file is your small web server for search and quotes.
+      </p>
+      <p style="margin: 0; line-height: 1.6">
+        If Terminal says <code>command not found: python3</code>, install Python from the official site:
+        <a href="https://www.python.org/downloads/" target="_blank" rel="noopener">python.org/downloads</a> (opens in browser), then try again.
+      </p>
+    </div>
+
+    <h2 id="checklist-daily">Every time you use the app</h2>
+    <div class="box">
+      <ol>
+        <li>
+          <strong>Start the server</strong> — pick one:
+          <ul>
+            <li>
+              <strong>Mac (easiest):</strong> In Finder, go to the folder that contains <code>server.py</code>, then double‑click
+              <code>JohnsStockApp.command</code>. A Terminal window opens; <strong>leave it open</strong>.
+            </li>
+            <li>
+              <strong>From Cursor:</strong> Menu <strong>Terminal → New Terminal</strong>, then see
+              <a href="https://code.visualstudio.com/docs/editor/integrated-terminal" target="_blank" rel="noopener">how the terminal works in Cursor/VS Code</a>.
+              Type <code>python3 server.py</code> and press Enter. <a href="#restart-server">More detail below</a>.
+            </li>
+          </ul>
+          <p class="note" style="margin: 8px 0 0">
+            If the terminal opens in your home folder, run <code>cd</code> to the directory that contains <code>server.py</code> first — otherwise you start the wrong file or nothing happens.
+          </p>
+        </li>
+        <li>
+          <strong>Read the line it prints</strong> — something like <code>John’sStockApp → http://localhost:8844</code>. That number is your
+          <strong>port</strong>.
+        </li>
+        <li>
+          <strong>Open that exact link in Chrome</strong> — use <a href="/">Open app home</a> only after the server is running (same computer).
+          If the port is not <code>8844</code>, copy the URL from Terminal instead of guessing.
+        </li>
+        <li>
+          <strong>Sanity check (optional):</strong> <a href="/api/health">Open API health check</a> — if you see JSON with <code>"ok": true</code>, the
+          Python server is answering; search will work on this origin.
+        </li>
+      </ol>
+    </div>
+
+    <h2 id="restart-server">Start / restart / stop the server</h2>
+    <div class="box">
+      <p style="margin: 0 0 10px; line-height: 1.55"><strong>Start or restart</strong></p>
+      <ul>
+        <li>Double‑click <code>JohnsStockApp.command</code> in your project folder, <strong>or</strong></li>
+        <li>
+          In Terminal, <code>cd</code> to your project folder (the one containing <code>server.py</code>), then run:
+          <code>python3 server.py</code>
+        </li>
+      </ul>
+      <p style="margin: 12px 0 6px; line-height: 1.55"><strong>Stop</strong></p>
+      <p style="margin: 0; line-height: 1.55">
+        Click the Terminal window that is running the server and press <strong>Ctrl+C</strong> (hold Control, tap C). The site will show “connection
+        refused” until you start it again — that is normal.
+      </p>
+    </div>
+
+    <h2 id="check-health">Check you are on the right server (not Vite by mistake)</h2>
+    <div class="box">
+      <p style="margin: 0 0 10px; line-height: 1.55">
+        Click: <a href="/api/health">Open API health check</a>. If this fails or you see “unknown route” on Search, the browser tab is probably on
+        the <strong>wrong port</strong> (another program, not <code>server.py</code>).
+      </p>
+      <p style="margin: 0; line-height: 1.55">
+        Your port is set in <a href="#env-file"><code>.env</code></a> as <code>PORT=…</code> (default in this project is often <code>8844</code>).
+        Always match the URL printed when Python starts.
+      </p>
+    </div>
+
+    <h2 id="env-file">What to put in <code>.env</code> (and what not to paste in chat)</h2>
+    <div class="box">
+      <ul>
+        <li>Edit the file named <code>.env</code> in the <strong>same folder</strong> as <code>server.py</code> (in Cursor: click it in the left file list).</li>
+        <li>
+          <code>PORT=8844</code> (or another free port) — must match what you open in the browser.
+        </li>
+        <li>
+          API keys (Twelve Data, EODHD, Marketstack, optional FMP, …) — one per line, no spaces around <code>=</code>. See
+          <code>.env.example</code> in the project for names.
+        </li>
+        <li><strong>Never paste</strong> <code>.env</code> into AI chat or screenshots you share publicly.</li>
+      </ul>
+    </div>
+
+    <h2 id="troubleshooting">If something breaks</h2>
+    <div class="box">
+      <ul>
+        <li>
+          <strong>Connection refused</strong> — server not running. <a href="#checklist-daily">Do the 4-step checklist</a> and
+          <a href="/api/health">check health</a>.
+        </li>
+        <li>
+          <strong>Search “unknown route”</strong> — wrong port / wrong program. <a href="/api/health">Health</a> should work on the same URL as the app.
+        </li>
+        <li>
+          <strong>News or corporate shows <code>/api/news</code> / <code>/api/corporate</code> and “Routes: … /api/health”</strong> — an old server is still running. Stop it (Ctrl+C), <code>cd</code> to this project, run <code>python3 server.py</code> again; <a href="/api/health">/api/health</a> should list <code>api_revision</code> 10+ and the new routes (incl. <code>/api/fx-eur</code>).
+        </li>
+        <li>
+          <strong>429 / search failed</strong> — Yahoo may rate-limit. The server then tries <strong>Twelve Data</strong> symbol search, then
+          <strong>Alpha Vantage</strong> <code>SYMBOL_SEARCH</code> (if <code>ALPHAVANTAGE_API_KEY</code> is set). Restart <code>server.py</code> after
+          editing <code>.env</code>. Free tiers are small — use tickers (e.g. <code>NVDA</code>) and pause between tries.
+        </li>
+        <li><strong>Stale page after an update</strong> — hard refresh: Chrome <strong>Cmd+Shift+R</strong>.</li>
+      </ul>
+    </div>
+
+    <h2>Personal use without FMP</h2>
+    <p style="margin: 0; line-height: 1.55; color: var(--m, #666)">
+      If <code>FMP_API_KEY</code> is empty, search uses <strong>Yahoo only</strong> (no key). The server can cache identical Yahoo searches (see
+      <code>YAHOO_SEARCH_CACHE_SECONDS</code> in <code>.env.example</code>) to reduce rate limits.
+    </p>
+
+    <h2>APIs (quick)</h2>
+    <ul>
+      <li><strong>Search</strong> — <code>/api/search</code> — FMP if <code>FMP_API_KEY</code> is set; else Yahoo (with country / exchange / currency hints).</li>
+      <li><strong>Quote</strong> — <code>/api/quote?symbol=…&amp;exchange=…</code> — Yahoo → Twelve → EODHD → Marketstack → Alpha Vantage → FMP.</li>
+      <li><strong>History</strong> — <code>/api/history?symbol=…&amp;range=1y</code> — daily OHLCV (provider order depends on listing).</li>
+      <li><strong>News</strong> — <code>/api/news?symbol=…&amp;exchange=…</code> — FMP when <code>FMP_API_KEY</code> is set; otherwise Yahoo Finance RSS (no key).</li>
+      <li><strong>Corporate</strong> — <code>/api/corporate?symbol=…&amp;exchange=…</code> — EODHD dividends/splits when <code>EODHD_API_TOKEN</code> is set; FMP dividends, splits, and earnings when FMP is set.</li>
+      <li><strong>FX → EUR</strong> — <code>/api/fx-eur</code> — ECB reference rates via Frankfurter (no key); used for Trading 212 EUR totals in the app.</li>
+      <li><strong>Health</strong> — <a href="/api/health">/api/health</a> — which keys are configured (no secrets).</li>
+    </ul>
+
+    <h2>Portfolio &amp; Trading 212</h2>
+    <ul>
+      <li>Import your <strong>Trading 212 account history CSV</strong>.</li>
+      <li>Older app saves are migrated once into the new portfolio format.</li>
+      <li>Use <strong>Download template</strong> on the <a href="/#/portfolio">Portfolio</a> tab for a minimal CSV.</li>
+    </ul>
+
+    <h2>New Cursor chat</h2>
+    <ol>
+      <li>New Chat in Cursor, same project folder.</li>
+      <li>Say: “Continue John’sStockApp” and attach <code>server.py</code>, <code>app.js</code> — <strong>not</strong> your <code>.env</code> secrets.</li>
+    </ol>
+
+    <p style="margin-top: 28px"><a href="/">← Back to app</a></p>
+  </body>
+</html>
