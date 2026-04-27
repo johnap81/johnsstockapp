@@ -256,7 +256,7 @@ function insuranceInstalmentDedupKey(dt, schedule) {
   const mo = dt.getMonth() + 1;
   const freq = String(schedule?.frequency || "").toLowerCase();
   if (freq === "monthly") return `${y}-${String(mo).padStart(2, "0")}`;
-  const sm = Math.max(1, Math.min(12, Math.floor(num(schedule?.monthOfYear))));
+  const sm = Math.max(1, Math.min(12, Math.floor(num(schedule?.monthOfYear)) || 1));
   if (freq === "yearly") return `${y}-${String(sm).padStart(2, "0")}`;
   return `${y}-${String(mo).padStart(2, "0")}`;
 }
@@ -265,6 +265,15 @@ function insuranceInstalmentDedupKey(dt, schedule) {
  * @param {object} schedule */
 function insuranceManualInstalmentDedupKeys(r, schedule) {
   const keys = new Set();
+  const vp = num(r?.valueAtPurchase);
+  const pdt = r?.purchaseDate && String(r.purchaseDate).trim() ? String(r.purchaseDate).trim().slice(0, 10) : "";
+  if (vp > 0 && pdt) {
+    const dt0 = parseLocalYmdToDate(pdt);
+    if (dt0) {
+      const k0 = insuranceInstalmentDedupKey(dt0, schedule);
+      if (k0) keys.add(k0);
+    }
+  }
   for (const p of Array.isArray(r?.payments) ? r.payments : []) {
     const dt = parseLocalYmdToDate(String(p?.date || "").trim());
     if (!dt) continue;
@@ -385,23 +394,44 @@ function dayCountYmdToDate(startYmd, endD) {
   return Math.max(0, Math.floor((b - a) / 864e5));
 }
 
+/** @param {unknown} r @returns {{ date: string, delta: number }[]} */
+function normalizeFdMovementsMerged(r) {
+  const arr = Array.isArray(r?.fdMovements) ? r.fdMovements : [];
+  const tmp = [];
+  for (const m of arr) {
+    const ds = String(m?.date || "").trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) continue;
+    const delta = num(m?.amount);
+    if (delta === 0) continue;
+    tmp.push({ date: ds, delta });
+  }
+  tmp.sort((x, y) => x.date.localeCompare(y.date));
+  const out = [];
+  for (const m of tmp) {
+    if (out.length && out[out.length - 1].date === m.date) out[out.length - 1].delta += m.delta;
+    else out.push({ date: m.date, delta: m.delta });
+  }
+  return out;
+}
+
 /**
- * FD: simple (non-compound) interest: principal × (r/100) × (days/365). Stops at maturity if set.
- * @returns {{ value: number, interest: number, days: number }}
+ * FD: simple (non-compound) daily accrual on the principal balance. Optional `fdMovements`:
+ * `{ date, amount }` — positive adds to principal, negative withdraws (cannot go below 0).
+ * Accrual stops at maturity if set.
+ * @returns {{ value: number, interest: number, days: number, principalNow: number }}
  */
 function computeFdSimpleValue(r) {
-  if (!r || !isFdAltRow(r)) return { value: 0, interest: 0, days: 0 };
-  const P = num(r.principal);
-  if (P <= 0) return { value: 0, interest: 0, days: 0 };
+  if (!r || !isFdAltRow(r)) return { value: 0, interest: 0, days: 0, principalNow: 0 };
+  let balance = num(r.principal);
+  if (balance < 0) balance = 0;
   const g = num(r.ratePct);
-  if (g < 0) return { value: P, interest: 0, days: 0 };
   const open = r.openDate || "";
   if (!String(open).trim()) {
-    if (r.fdValMode === "simple" || r.fdValMode == null) return { value: P, interest: 0, days: 0 };
-    return { value: num(r.currentValue) || P, interest: 0, days: 0 };
+    if (r.fdValMode === "simple" || r.fdValMode == null) return { value: balance, interest: 0, days: 0, principalNow: balance };
+    return { value: num(r.currentValue) || balance, interest: 0, days: 0, principalNow: balance };
   }
-  const a = parseLocalYmdToDate(open);
-  if (!a) return { value: P, interest: 0, days: 0 };
+  const a = parseLocalYmdToDate(String(open).trim().slice(0, 10));
+  if (!a) return { value: balance, interest: 0, days: 0, principalNow: balance };
   a.setHours(0, 0, 0, 0);
   const now = new Date();
   now.setHours(0, 0, 0, 0);
@@ -412,9 +442,46 @@ function computeFdSimpleValue(r) {
     if (end > matD) end = matD;
   }
   if (end < a) end = new Date(a);
-  const days = Math.max(0, Math.floor((end - a) / 864e5));
-  const interest = P * (g / 100) * (days / 365);
-  return { value: P + interest, interest, days };
+
+  const movs = normalizeFdMovementsMerged(r);
+  for (const m of movs) {
+    const md = parseLocalYmdToDate(m.date);
+    if (!md || md >= a) continue;
+    balance += m.delta;
+    if (balance < 0) balance = 0;
+  }
+
+  if (g < 0) return { value: balance, interest: 0, days: 0, principalNow: balance };
+
+  let interest = 0;
+  let daysAcc = 0;
+  let cursor = new Date(a);
+  cursor.setHours(0, 0, 0, 0);
+  const inRange = movs.filter((m) => {
+    const md = parseLocalYmdToDate(m.date);
+    return md && md >= a && md <= end;
+  });
+  for (const m of inRange) {
+    const evD = /** @type {Date} */ (parseLocalYmdToDate(m.date));
+    evD.setHours(0, 0, 0, 0);
+    if (evD < cursor) {
+      balance += m.delta;
+      if (balance < 0) balance = 0;
+      continue;
+    }
+    const days = Math.max(0, Math.floor((evD - cursor) / 864e5));
+    interest += balance * (g / 100) * (days / 365);
+    daysAcc += days;
+    balance += m.delta;
+    if (balance < 0) balance = 0;
+    cursor = new Date(evD);
+  }
+  const tailDays = Math.max(0, Math.floor((end - cursor) / 864e5));
+  interest += balance * (g / 100) * (tailDays / 365);
+  daysAcc += tailDays;
+  const principalNow = balance;
+  const value = principalNow + interest;
+  return { value, interest, days: daysAcc, principalNow };
 }
 
 /**
@@ -423,20 +490,25 @@ function computeFdSimpleValue(r) {
  */
 function getFdRowMetrics(r) {
   if (!isFdAltRow(r)) {
-    return { value: 0, inv: 0, pl: 0, mode: "x" };
+    return { value: 0, inv: 0, pl: 0, principalNow: 0, mode: "x" };
   }
-  const inv = num(r.principal);
+  const inv0 = num(r.principal);
   const mode = r.fdValMode === "manual" || r.fdValMode === "m" ? "manual" : "simple";
   if (mode === "manual") {
-    const v = num(r.currentValue) > 0 ? num(r.currentValue) : inv;
-    return { value: v, inv, pl: v - inv, sub: "Manual value", mode: "manual" };
+    const v = num(r.currentValue) > 0 ? num(r.currentValue) : inv0;
+    return { value: v, inv: inv0, pl: v - inv0, principalNow: inv0, sub: "Manual value", mode: "manual" };
   }
-  const { value, interest, days } = computeFdSimpleValue(r);
+  const { value, interest, days, principalNow } = computeFdSimpleValue(r);
+  const ccyU = normalizeCcyForFx(String(r.ccy || "INR").toUpperCase());
+  const inv = principalNow;
+  const movn = normalizeFdMovementsMerged(r).length;
+  const ret = value - inv;
   return {
     value,
     inv,
-    pl: value - inv,
-    sub: `Simple int. · ${days}d · +${fmtN(interest, 2)} ${String(r.ccy || "").toUpperCase()}`,
+    pl: ret,
+    principalNow,
+    sub: `Simple int. · ${days}d · +${fmtN(interest, 2)} ${ccyU}${movn ? ` · ${movn} principal change(s)` : ""}`,
     interest,
     days,
     mode: "simple",
@@ -458,11 +530,15 @@ function getInsuranceRowMetrics(r) {
   const isManual = modeS === "manual" || modeS === "m" || (g <= 0 && modeS !== "compound");
   if (isManual) {
     const v = num(r.currentValue) > 0 ? num(r.currentValue) : inv;
+    const ccyU = normalizeCcyForFx(String(r.ccy || "INR").toUpperCase());
+    const ret = v - inv;
     return {
       value: v,
       inv,
-      pl: v - inv,
-      sub: g <= 0 && !isManual ? "Set growth % or use manual value mode" : "Manual or no growth",
+      pl: ret,
+      sub:
+        (g <= 0 && !isManual ? "Set growth % or use manual value mode" : "Manual or no growth") +
+        ` · return (est.) ${fmtMoney(ccyU, ret)}`,
       mode: "manual",
     };
   }
@@ -480,11 +556,13 @@ function getInsuranceRowMetrics(r) {
   const nPay = Array.isArray(r.payments) ? r.payments.length : 0;
   const nAuto = r.premiumSchedule?.enabled ? getInsuranceAutoScheduledPremiums(r, today).length : 0;
   const autoBit = nAuto ? ` · ${nAuto} auto instalment(s)` : "";
+  const ccyU = normalizeCcyForFx(String(r.ccy || "INR").toUpperCase());
+  const ret = v - inv;
   return {
     value: v,
     inv,
-    pl: v - inv,
-    sub: `Comp. (daily) on flow · p.a. ${fmtN(g, 2)}%${nPay ? ` · ${nPay} logged` : ""}${autoBit}`,
+    pl: ret,
+    sub: `Comp. (daily) on flow · p.a. ${fmtN(g, 2)}%${nPay ? ` · ${nPay} logged` : ""}${autoBit} · return (est.) ${fmtMoney(ccyU, ret)}`,
     mode: "compound",
   };
 }
@@ -546,6 +624,18 @@ function migratePortfolioBundleShape(bundle) {
         r.insValMode = num(r.growthPct) > 0 ? "compound" : "manual";
         changed = true;
       }
+      if (isInsuranceAltRow(r) && r.premiumSchedule && typeof r.premiumSchedule === "object") {
+        const sch = r.premiumSchedule;
+        if (
+          sch.frequency &&
+          sch.enabled !== false &&
+          String(sch.enabled).toLowerCase() !== "false" &&
+          sch.enabled !== true
+        ) {
+          sch.enabled = true;
+          changed = true;
+        }
+      }
     }
   }
   const fdRows = bundle.brokers[PF_FIXED_DEPOSIT]?.rows;
@@ -558,6 +648,10 @@ function migratePortfolioBundleShape(bundle) {
       }
       if (isFdAltRow(r) && r.fdValMode == null) {
         r.fdValMode = "simple";
+        changed = true;
+      }
+      if (isFdAltRow(r) && !Array.isArray(r.fdMovements)) {
+        r.fdMovements = [];
         changed = true;
       }
     }
@@ -2841,7 +2935,15 @@ function wire() {
         bundle.brokers[PF_INSURANCE].rows.push(row);
         savePfBundle(bundle);
         renderPf();
-        status(`Added policy → ${PF_INS_CO_LABEL[getPfInsuranceCompany()]}`);
+        let msg = `Added policy → ${PF_INS_CO_LABEL[getPfInsuranceCompany()]}`;
+        if (row.premiumSchedule?.enabled) {
+          const td = new Date();
+          td.setHours(0, 0, 0, 0);
+          const nAut = getInsuranceAutoScheduledPremiums(row, td).length;
+          const invTot = insuranceInvestedTotal(row);
+          msg += ` · ${nAut} auto instalment(s) through today · invested total ≈ ${fmtMoney(ccy, invTot)}`;
+        }
+        status(msg);
         return;
       }
       if (b === PF_FIXED_DEPOSIT) {
@@ -2875,6 +2977,7 @@ function wire() {
           maturityDate: val("fFdMat"),
           ccy,
           fdCountry: val("fFdCtry"),
+          fdMovements: [],
         };
         ensurePfRowId(row);
         bundle.brokers[PF_FIXED_DEPOSIT].rows.push(row);
@@ -2928,8 +3031,8 @@ function wire() {
         name = "johnsstockapp-insurance-template.csv";
       } else if (b === PF_FIXED_DEPOSIT) {
         csv =
-          "fdBank,fdCountry,fdName,fdRef,openDate,principal,ratePct,fdValMode,currentValue,maturityDate,currency\n" +
-          "SBI,India,12-month FD,R1,2024-04-01,100000,7.1,simple,0,2025-04-01,INR\n";
+          "fdBank,fdCountry,fdName,fdRef,openDate,principal,ratePct,fdValMode,currentValue,maturityDate,currency,fdMovementsJson\n" +
+          'SBI,India,12-month FD,R1,2024-04-01,100000,7.1,simple,0,2025-04-01,INR,"[]"\n';
         name = "johnsstockapp-fd-template.csv";
       }
       const a = document.createElement("a");
@@ -5406,10 +5509,12 @@ function exportPfCsv() {
         "currentValue",
         "maturityDate",
         "currency",
+        "fdMovementsJson",
       ].join(","),
     );
     for (const r of rows) {
       if (!isFdAltRow(r)) continue;
+      const movJ = JSON.stringify(Array.isArray(r.fdMovements) ? r.fdMovements : []);
       lines.push(
         [
           escC(r.fdBank),
@@ -5423,6 +5528,7 @@ function exportPfCsv() {
           escC(fmtN(num(r.currentValue), 4)),
           escC(r.maturityDate),
           escC(r.ccy),
+          escC(movJ),
         ].join(","),
       );
     }
@@ -5614,12 +5720,20 @@ function readPremiumScheduleFromPfAddForm() {
   const freq = String(val("fPolSchFreq") || "off").toLowerCase();
   if (!freq || freq === "off" || freq === "none") return null;
   const frequency = freq === "yearly" || freq === "annual" ? "yearly" : "monthly";
-  const anchor = String(val("fPolSchAnchor") || "").trim();
+  let anchor = String(val("fPolSchAnchor") || "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(anchor)) {
+    const pur = String(val("fPolPur") || "").trim().slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(pur)) anchor = pur;
+  }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(anchor)) return null;
-  const base = num(val("fPolSchAmt"));
+  let base = num(val("fPolSchAmt"));
+  if (!(base > 0)) base = num(val("fPolV0"));
   if (!(base > 0)) return null;
-  const dayOfMonth = Math.max(1, Math.min(31, Math.floor(num(val("fPolSchDay"))) || 1));
-  const monthOfYear = Math.max(1, Math.min(12, Math.floor(num(val("fPolSchMon"))) || 1));
+  const anchorDt = parseLocalYmdToDate(anchor);
+  const dayFromAnchor = anchorDt ? anchorDt.getDate() : 1;
+  const monthFromAnchor = anchorDt ? anchorDt.getMonth() + 1 : 1;
+  const dayOfMonth = Math.max(1, Math.min(31, Math.floor(num(val("fPolSchDay"))) || dayFromAnchor));
+  const monthOfYear = Math.max(1, Math.min(12, Math.floor(num(val("fPolSchMon"))) || monthFromAnchor));
   const annualStepPct = num(val("fPolSchStep"));
   const maxRaw = String(val("fPolSchMax") || "").trim();
   const maxInstalments = maxRaw === "" ? null : Math.max(0, Math.floor(num(maxRaw)));
@@ -5757,6 +5871,7 @@ function wirePfAddFieldPreviews() {
       maturityDate: val("fFdMat"),
       fdValMode: "simple",
       ccy: ccy0,
+      fdMovements: [],
     };
     const m = getFdRowMetrics(temp);
     el.textContent =
@@ -5851,7 +5966,7 @@ function paintPfAddFieldsMount() {
             <input class="in" id="fPolSchMax" placeholder="e.g. 6" inputmode="numeric" autocomplete="off" />
           </label>
         </div>
-        <p class="sml muted" style="margin:0.5rem 0 0">Scheduled amounts are included up to <strong>today</strong> for value and invested total. Log a premium for a period to override the auto amount for that month (monthly) or that year+month (yearly).</p>
+        <p class="sml muted" style="margin:0.5rem 0 0">If <strong>First due date</strong> is empty, the app uses <strong>Date of purchase</strong> as the anchor. If <strong>Instalment amount</strong> is empty, it uses <strong>Value at purchase</strong>. All scheduled instalments on or before <strong>today</strong> are included in invested total and compounding. Log a premium to override auto for that month (or policy month for yearly).</p>
       </details>
       <label class="lbl pfAddField">Current / surrender value <span class="muted sml">(manual mode)</span>
         <input class="in" id="fPolCur" placeholder="only if you chose Manual above" inputmode="decimal" autocomplete="off" />
@@ -5927,7 +6042,8 @@ function paintPfAddFieldsMount() {
       <label class="lbl pfAddField">Country / region <span class="muted sml">(opt.)</span>
         <input class="in" id="fFdCtry" placeholder="India, Ireland…" autocomplete="off" />
       </label>
-      <p class="sml muted pfAddField" id="fFdValPreview" style="grid-column:1/-1" role="status" aria-live="polite"></p>`;
+      <p class="sml muted pfAddField" id="fFdValPreview" style="grid-column:1/-1" role="status" aria-live="polite"></p>
+      <p class="sml muted pfAddField" style="grid-column:1/-1;margin:0" role="note">After saving, use <strong>Add principal</strong> / <strong>Withdraw</strong> on the row. Simple interest accrues daily on each balance between movement dates (effective on the date you enter).</p>`;
     wirePfAddFieldPreviews();
     return;
   }
@@ -6007,6 +6123,72 @@ function handlePfTableClick(ev) {
     savePfBundle(bundle);
     renderPf();
     status("Auto instalment schedule updated");
+    return;
+  }
+  const fdAdd = t.closest("[data-pf-fdadd]");
+  if (fdAdd instanceof HTMLElement && fdAdd.dataset.pfFdadd) {
+    if (getActiveBroker() !== PF_FIXED_DEPOSIT) return;
+    const rid = fdAdd.dataset.pfFdadd;
+    const amtS = window.prompt("Amount to add to principal (must be > 0)", "");
+    if (amtS === null) return;
+    const amt = num(amtS);
+    if (!(amt > 0)) {
+      status("Enter a positive amount");
+      return;
+    }
+    const defD = new Date().toISOString().slice(0, 10);
+    const dateS = window.prompt(
+      "Effective date YYYY-MM-DD (interest accrues on the new balance from this date)",
+      defD,
+    );
+    if (dateS === null) return;
+    const ds = String(dateS || "").trim().slice(0, 10) || defD;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) {
+      status("Use date format YYYY-MM-DD");
+      return;
+    }
+    const bundleFd = loadPfBundle();
+    const rowFd = bundleFd.brokers[PF_FIXED_DEPOSIT].rows.find((r) => pfRowId(r) === rid || String(r.sym || "") === rid);
+    if (!rowFd || !isFdAltRow(rowFd)) return;
+    if (!Array.isArray(rowFd.fdMovements)) rowFd.fdMovements = [];
+    rowFd.fdMovements.push({ date: ds, amount: amt });
+    savePfBundle(bundleFd);
+    renderPf();
+    status(`Principal +${fmtN(amt, 2)} · ${ds}`);
+    return;
+  }
+  const fdWd = t.closest("[data-pf-fdwd]");
+  if (fdWd instanceof HTMLElement && fdWd.dataset.pfFdwd) {
+    if (getActiveBroker() !== PF_FIXED_DEPOSIT) return;
+    const rid = fdWd.dataset.pfFdwd;
+    const amtS = window.prompt("Amount to withdraw from principal (must be > 0)", "");
+    if (amtS === null) return;
+    const amt = num(amtS);
+    if (!(amt > 0)) {
+      status("Enter a positive amount");
+      return;
+    }
+    const defD = new Date().toISOString().slice(0, 10);
+    const dateS = window.prompt("Effective date YYYY-MM-DD", defD);
+    if (dateS === null) return;
+    const ds = String(dateS || "").trim().slice(0, 10) || defD;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) {
+      status("Use date format YYYY-MM-DD");
+      return;
+    }
+    const bundleW = loadPfBundle();
+    const rowW = bundleW.brokers[PF_FIXED_DEPOSIT].rows.find((r) => pfRowId(r) === rid || String(r.sym || "") === rid);
+    if (!rowW || !isFdAltRow(rowW)) return;
+    if (!Array.isArray(rowW.fdMovements)) rowW.fdMovements = [];
+    const book = computeFdSimpleValue(rowW).principalNow;
+    if (amt > book + 1e-6) {
+      status(`That exceeds book principal (${fmtN(book, 2)})`);
+      return;
+    }
+    rowW.fdMovements.push({ date: ds, amount: -amt });
+    savePfBundle(bundleW);
+    renderPf();
+    status(`Principal −${fmtN(amt, 2)} · ${ds}`);
     return;
   }
   const rm = t.closest("[data-pf-rm]");
@@ -6166,7 +6348,7 @@ function renderPfInsuranceTable(el) {
     ? `<tr class="tot"><td colspan="6"><strong>Total</strong></td><td class="pfNum"><strong>${esc(fmtMoney(oneCcy, tVal))}</strong></td><td class="pfNum pfPlCol ${tPl >= 0 ? "plp" : "pln"}"><strong>${esc(fmtMoney(oneCcy, tPl))}</strong></td><td></td><td></td></tr>`
     : `<tr class="tot"><td colspan="11" class="muted">Several currencies in this provider — row amounts stay native. See the <strong>By ledger (€)</strong> block at the <strong>top</strong> of the page.</td></tr>`;
   el.innerHTML = `<div class="pfTableWrap" role="region" aria-label="Insurance policies"><table class="pfHoldingsTbl pfAltHoldingsTbl"><thead><tr>
-    <th>Policy</th><th>Policy #</th><th>Purchased</th><th class="pfNum">At purchase</th><th class="pfNum">Premiums paid</th><th class="pfNum">Invested total</th><th class="pfNum">Growth % p.a.</th><th class="pfNum">Current value <span class="muted sml">(est.)</span></th><th class="pfNum pfPlCol">P/L</th><th>Ccy</th><th></th>
+    <th>Policy</th><th>Policy #</th><th>Purchased</th><th class="pfNum">At purchase</th><th class="pfNum">Premiums paid</th><th class="pfNum">Invested total</th><th class="pfNum">Growth % p.a.</th><th class="pfNum">Current value <span class="muted sml">(est.)</span></th><th class="pfNum pfPlCol">Return (est.)</th><th>Ccy</th><th></th>
   </tr></thead><tbody>${body}${foot}</tbody></table></div>`;
   el.onclick = (e) => handlePfTableClick(e);
   pfClearTableMountState();
@@ -6193,7 +6375,8 @@ function renderPfFdTable(el) {
       const val = m.value;
       const pl = m.pl;
       const ccy = normalizeCcyForFx(String(r.ccy || "INR").toUpperCase());
-      return { r, inv, val, pl, ccy, msub: m.sub || "" };
+      const pBook = typeof m.principalNow === "number" ? m.principalNow : num(r.principal);
+      return { r, inv, val, pl, ccy, msub: m.sub || "", pBook };
     }
     const qty = num(r.qty);
     const avg = num(r.avg);
@@ -6232,23 +6415,29 @@ function renderPfFdTable(el) {
   );
   const body = rowObjs
     .map((o) => {
-      const { r, inv, val, pl, ccy, msub = "" } = o;
+      const { r, inv, val, pl, ccy, msub = "", pBook: pBook0 } = o;
       const cls = pl >= 0 ? "plp" : "pln";
       const rid = pfRowId(r) || String(r.sym || "");
       if (isFdAltRow(r)) {
+        const prOpen = num(r.principal);
+        const prBook = typeof pBook0 === "number" ? pBook0 : prOpen;
+        const movc = Array.isArray(r.fdMovements) ? r.fdMovements.length : 0;
         return `<tr>
           <td class="sml">${esc(r.fdBank || "—")}</td>
           <td class="sml">${esc(r.fdCountry || "—")}</td>
           <td class="sml"><strong>${esc(r.fdName || "—")}</strong></td>
           <td class="sml">${esc(r.fdRef || "—")}</td>
           <td class="sml">${esc(r.openDate || "—")}</td>
-          <td class="pfNum">${esc(fmtMoney(ccy, num(r.principal)))}</td>
+          <td class="pfNum">${esc(fmtMoney(ccy, prBook))}${movc > 0 || Math.abs(prBook - prOpen) > 1e-6 ? `<div class="muted sml" style="font-weight:400">opened ${esc(fmtMoney(ccy, prOpen))}</div>` : ""}</td>
           <td class="pfNum">${esc(fmtN(num(r.ratePct), 2))}%</td>
           <td class="pfNum">${esc(fmtMoney(ccy, val))}${msub ? `<div class="muted sml" style="font-weight:400;max-width:12rem">${esc(msub)}</div>` : ""}</td>
           <td class="sml">${esc(r.maturityDate || "—")}</td>
           <td>${esc(formatCcyLabel(ccy))}</td>
           <td class="pfNum pfPlCol ${cls}">${esc(fmtMoney(ccy, pl))}</td>
-          <td class="pfActCol"><button type="button" class="btn ghost smlBtn" data-pf-rm="${esc(rid)}">Remove</button></td>
+          <td class="pfActCol"><button type="button" class="btn ghost smlBtn" data-pf-fdadd="${esc(rid)}">Add principal</button>
+            <button type="button" class="btn ghost smlBtn" data-pf-fdwd="${esc(rid)}">Withdraw</button>
+            <button type="button" class="btn ghost smlBtn" data-pf-rm="${esc(rid)}">Remove</button>
+            ${movc ? `<span class="muted sml">${movc} movement(s)</span>` : ""}</td>
         </tr>`;
       }
       const href = instrumentHref(r.sym, r.ex, r.nm || "", r.ccy, { fromPf: true });
@@ -6265,7 +6454,7 @@ function renderPfFdTable(el) {
     ? `<tr class="tot"><td colspan="7"><strong>Total current value</strong></td><td class="pfNum"><strong>${esc(fmtMoney(oneCcy, tVal))}</strong></td><td colspan="2"></td><td class="pfNum pfPlCol ${tPl >= 0 ? "plp" : "pln"}"><strong>${esc(fmtMoney(oneCcy, tPl))}</strong></td><td></td></tr>`
     : `<tr class="tot"><td colspan="12" class="muted">Multiple currencies and countries — each row keeps its own currency; see the € total under the page title.</td></tr>`;
   el.innerHTML = `<div class="pfTableWrap" role="region" aria-label="Fixed deposits"><table class="pfHoldingsTbl pfAltHoldingsTbl"><thead><tr>
-    <th>Bank</th><th>Country</th><th>Deposit</th><th>Ref #</th><th>Open</th><th class="pfNum">Principal</th><th class="pfNum">Rate p.a.</th><th class="pfNum">Value <span class="muted sml">(est.)</span></th><th>Maturity</th><th>Ccy</th><th class="pfNum pfPlCol">P/L vs principal</th><th></th>
+    <th>Bank</th><th>Country</th><th>Deposit</th><th>Ref #</th><th>Open</th><th class="pfNum">Principal <span class="muted sml">(book)</span></th><th class="pfNum">Rate p.a.</th><th class="pfNum">Value <span class="muted sml">(est.)</span></th><th>Maturity</th><th>Ccy</th><th class="pfNum pfPlCol">Return (est.)</th><th></th>
   </tr></thead><tbody>${body}${foot}</tbody></table></div>`;
   el.onclick = (e) => handlePfTableClick(e);
   pfClearTableMountState();
@@ -7259,7 +7448,13 @@ function parseInsuranceCsv(text) {
     if (iSch >= 0 && String(c[iSch] || "").trim()) {
       try {
         const raw = JSON.parse(String(c[iSch]).trim());
-        if (raw && typeof raw === "object" && raw.enabled) premiumSchedule = raw;
+        if (raw && typeof raw === "object" && raw.frequency) {
+          if (raw.enabled === false || String(raw.enabled).toLowerCase() === "false") premiumSchedule = null;
+          else {
+            raw.enabled = true;
+            premiumSchedule = raw;
+          }
+        }
       } catch {
         premiumSchedule = null;
       }
@@ -7301,6 +7496,7 @@ function parseFdCsv(text) {
   const iMat = hdrPick(Hnorm, ["maturitydate", "maturity date", "maturity"], "loose");
   const iCtry = hdrPick(Hnorm, ["fdcountry", "country", "region", "nation"], "loose");
   const iFdM = hdrPick(Hnorm, ["fdvalmode", "value mode", "fd mode", "accrual"], "loose");
+  const iMov = hdrPick(Hnorm, ["fdmovementsjson", "fd movements", "fdmovements", "principal movements"], "loose");
   const out = [];
   for (const ln of lines.slice(1)) {
     const c = row(ln);
@@ -7319,6 +7515,15 @@ function parseFdCsv(text) {
     } else if (iCur >= 0 && cur > 0 && Math.abs(cur - pr) > 1e-3) {
       fdValMode = "manual";
     }
+    let fdMovements = [];
+    if (iMov >= 0 && String(c[iMov] || "").trim()) {
+      try {
+        const p = JSON.parse(String(c[iMov]).trim());
+        if (Array.isArray(p)) fdMovements = p;
+      } catch {
+        fdMovements = [];
+      }
+    }
     const rowObj = {
       fdBank: bank,
       fdName: nm,
@@ -7331,6 +7536,7 @@ function parseFdCsv(text) {
       maturityDate: iMat >= 0 ? String(c[iMat] || "").trim() : "",
       ccy,
       fdCountry: iCtry >= 0 ? String(c[iCtry] || "").trim() : "",
+      fdMovements,
     };
     ensurePfRowId(rowObj);
     out.push(rowObj);
