@@ -610,6 +610,69 @@ function scheduleOwnerCloudPush() {
   }, 1800);
 }
 
+function clearOwnerCloudKeysOnDevice() {
+  try {
+    localStorage.removeItem(K.pfOwnerCloud);
+    localStorage.removeItem(K.pfOwnerCloudRead);
+    localStorage.removeItem(K.pfOwnerCloudWrite);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Updates the status line in the “Cloud portfolio” card (owner view only).
+ */
+function updateOwnerCloudCardUI() {
+  const st = $("pfOwnerCloudStatusLine");
+  if (!(st instanceof HTMLElement)) return;
+  if (isOwnerCloudSyncActive()) {
+    st.className = "sml migrateBanner";
+    st.innerHTML =
+      "<strong>Connected</strong> — this device uses the <strong>server</strong> as the source of truth. Edits upload automatically (debounced). Your family can open the read-only link any time; they use <strong>Refresh market prices</strong> for live quotes on every row.";
+  } else {
+    st.className = "sml globalApiBannerErr";
+    st.innerHTML =
+      "<strong>Not connected on this browser</strong> — paste your <strong>read + write</strong> keys from Render (same as env vars) and tap <strong>Save &amp; load from server</strong>. This replaces fragile copy-paste URLs.";
+  }
+}
+
+/**
+ * On hosted apps, show whether GitHub Gist is set so data survives Render free restarts.
+ */
+async function applyPfServerHealthHint() {
+  const el = $("pfServerHealthHint");
+  if (!(el instanceof HTMLElement)) return;
+  if (!isHostedWebApp()) {
+    el.textContent = "";
+    return;
+  }
+  try {
+    const r = await fetch("/api/health", { cache: "no-store" });
+    const j = await r.json().catch(() => ({}));
+    const sfp = j.shared_family_portfolio;
+    if (!sfp || typeof sfp !== "object") {
+      el.textContent = "";
+      return;
+    }
+    if (sfp.gist_configured) {
+      el.className = "sml migrateBanner";
+      el.innerHTML =
+        "Server: <strong>GitHub Gist</strong> — the shared snapshot is stored off-instance and <strong>survives</strong> Render restarts. Good for 24/7 access worldwide.";
+      return;
+    }
+    if (sfp.render_free_ephemeral_warning && String(sfp.storage || "") === "local_file") {
+      el.className = "sml globalApiBannerErr";
+      el.innerHTML =
+        "<strong>Action needed:</strong> the server is saving the snapshot only to <strong>ephemeral disk</strong> (typical on Render <strong>free</strong>). Data can disappear. Add <code>GITHUB_PAT</code> + <code>GITHUB_GIST_ID</code> in Render, redeploy, then <strong>Publish for family (server)</strong> once. See <code>/.env.example</code>.";
+    } else {
+      el.textContent = "";
+    }
+  } catch {
+    el.textContent = "";
+  }
+}
+
 /**
  * Fetches the published snapshot and replaces this browser’s portfolio (localStorage).
  * @returns {Promise<{ ok: true } | { ok: false; reason: string; http?: number; code?: string; detail?: string }>}
@@ -864,6 +927,22 @@ async function fetchSharedFamilyPortfolio(readToken) {
 }
 
 /**
+ * True when a v2 bundle from the server has no rows in any broker ledger (publish was empty or never had data).
+ * @param {unknown} bundle
+ * @returns {boolean}
+ */
+function isSharedBundleAllLedgersEmpty(bundle) {
+  if (!bundle || typeof bundle !== "object") return true;
+  const b = /** @type {{ v?: number, brokers?: Record<string, { rows?: unknown[] }> }} */ (bundle);
+  if (b.v !== 2 || !b.brokers || typeof b.brokers !== "object") return true;
+  for (const id of PF_BROKER_IDS) {
+    const rows = b.brokers[id]?.rows;
+    if (Array.isArray(rows) && rows.length > 0) return false;
+  }
+  return true;
+}
+
+/**
  * Family read-only: load server snapshot for `?view=family&token=…` in the hash, or recover from
  * a prior successful load in this tab (so Search → Portfolio does not show an empty ledger on phones).
  */
@@ -913,7 +992,11 @@ async function applyPortfolioSharedFromHash(sp) {
         ban.hidden = false;
         const when = ua ? ` · snapshot ${esc(String(ua))}` : "";
         ban.className = "card2 mt migrateBanner";
-        ban.innerHTML = `<p class="sml"><strong>Family view (read-only)</strong> — data from the server${when}. Scrolling: totals load after FX; use the buttons for latest prices. <a class="backLink" href="#/portfolio?exitFamily=1">Open normal portfolio</a> (this device only) — clears the family link in this tab.</p>`;
+        const emptyAll = _pfSharedBundle && isSharedBundleAllLedgersEmpty(_pfSharedBundle);
+        const emptyWarn = emptyAll
+          ? `<p class="sml globalApiBannerErr" style="margin-top:10px" role="status"><strong>Server snapshot has no holdings.</strong> The owner must open <strong>normal Portfolio</strong> (not this family link) on a device that already has the full portfolio, then <strong>Publish for family (server)</strong> with the write key. On <strong>Render free</strong>, set <code>GITHUB_PAT</code> + <code>GITHUB_GIST_ID</code> so the file survives restarts (see <code>/.env.example</code>).</p>`
+          : "";
+        ban.innerHTML = `<p class="sml"><strong>Family view (read-only)</strong> — data from the server${when}. Scrolling: totals load after FX; use the buttons for latest prices. <a class="backLink" href="#/portfolio?exitFamily=1">Open normal portfolio</a> (this device only) — clears the family link in this tab.</p>${emptyWarn}`;
       }
       if (manage instanceof HTMLElement) manage.hidden = true;
       const ft = $("pfFamilyTools");
@@ -958,14 +1041,23 @@ async function publishPortfolioToServer() {
     status("Open the normal portfolio (not the family link) to publish your data.");
     return;
   }
-  const k = window.prompt(
-    "Paste the publish key (must match SHARED_PORTFOLIO_WRITE_TOKEN in Render). It is not stored in this app.",
-  );
+  let k = getOwnerCloudWriteK();
+  if (!k) {
+    k = window.prompt(
+      "Paste the publish key (must match SHARED_PORTFOLIO_WRITE_TOKEN in Render). Or use Cloud portfolio on this page first to save the key on this device.",
+    );
+  }
   if (!k || !String(k).trim()) {
     status("Publish cancelled");
     return;
   }
   const bundle = loadPfBundle();
+  if (isSharedBundleAllLedgersEmpty(bundle)) {
+    if (!confirm("Your portfolio has no rows in any ledger. Publish an empty snapshot to the server anyway?")) {
+      status("Publish cancelled");
+      return;
+    }
+  }
   try {
     const r = await fetch("/api/shared/portfolio", {
       method: "PUT",
@@ -2039,6 +2131,25 @@ function portfolioHtml() {
     ${banner}
     <h1 class="h1">Portfolio</h1>
     <div id="pfOwnerCloudBanner" class="card2 mt" hidden role="alert" aria-live="assertive"></div>
+    <section id="pfOwnerCloudCard" class="card2 mt" aria-labelledby="pfCloudHd" hidden>
+      <h2 class="h2" id="pfCloudHd">Cloud portfolio (all your devices + family)</h2>
+      <p id="pfServerHealthHint" class="sml" role="status" aria-live="polite" style="margin:0 0 8px 0"></p>
+      <p id="pfOwnerCloudStatusLine" class="sml" style="margin:0 0 8px 0"></p>
+      <p class="sml muted" style="margin:0 0 12px 0">Use the <strong>same</strong> values as <code>SHARED_PORTFOLIO_READ_TOKEN</code> and <code>SHARED_PORTFOLIO_WRITE_TOKEN</code> in your host (e.g. Render). They are kept <strong>only in this browser</strong>. After you connect, the app <strong>loads the server copy</strong> and <strong>auto-uploads</strong> when you change holdings, so you and your family use the same snapshot—no waiting for a manual publish for day-to-day edits. Use <strong>Publish for family (server)</strong> when you want a guaranteed upload after a big import.</p>
+      <div class="grid2 mt" style="gap:12px;">
+        <label class="lbl" style="margin:0">Read token
+          <input class="in" id="pfCloudReadIn" type="password" autocomplete="off" spellcheck="false" placeholder="from Render" />
+        </label>
+        <label class="lbl" style="margin:0">Write key
+          <input class="in" id="pfCloudWriteIn" type="password" autocomplete="off" spellcheck="false" placeholder="from Render" />
+        </label>
+      </div>
+      <div class="rowgap mt" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+        <button type="button" class="btn" id="btnPfCloudSave">Save &amp; load from server</button>
+        <button type="button" class="btn ghost" id="btnPfCloudReload">Reload from server</button>
+        <button type="button" class="btn ghost" id="btnPfCloudDisc">Disconnect on this device</button>
+      </div>
+    </section>
     <div id="pfSharedBanner" class="card2 mt" hidden aria-live="polite"></div>
     <div id="pfFamilyTools" class="card2 mt pfFamilyTools" hidden role="region" aria-label="Family read-only actions">
       <p class="sml muted" style="margin:0 0 8px 0">Tap <strong>Refresh market prices</strong> to pull live quotes (waits for the server). <strong>Reload owner snapshot</strong> uses the last data the owner published. No edits — read-only.</p>
@@ -2255,6 +2366,96 @@ function wire() {
         elOb.className = "card2 mt";
       }
     }
+    const occPre = $("pfOwnerCloudCard");
+    if (occPre instanceof HTMLElement) {
+      const vf = (sp.get("view") || "").trim().toLowerCase() === "family";
+      const turl = familyReadTokenFromUrl(sp);
+      occPre.hidden = Boolean(vf && turl);
+      if (!occPre.hidden) {
+        updateOwnerCloudCardUI();
+        void applyPfServerHealthHint();
+      }
+    }
+    $("btnPfCloudSave")?.addEventListener("click", async () => {
+      const rIn = $("pfCloudReadIn");
+      const wIn = $("pfCloudWriteIn");
+      const r = rIn instanceof HTMLInputElement ? rIn.value.trim() : "";
+      const w = wIn instanceof HTMLInputElement ? wIn.value.trim() : "";
+      if (!r || !w) {
+        status("Enter both read token and write key (from Render).");
+        return;
+      }
+      if (isPlaceholderOwnerCloudToken(r) || isPlaceholderOwnerCloudToken(w)) {
+        status("Use the real secrets from Render, not the words READ_TOKEN or WRITE_TOKEN.");
+        return;
+      }
+      try {
+        localStorage.setItem(K.pfOwnerCloud, "1");
+        localStorage.setItem(K.pfOwnerCloudRead, r);
+        localStorage.setItem(K.pfOwnerCloudWrite, w);
+      } catch {
+        status("Could not save — allow local storage for this site (not strict private mode).");
+        return;
+      }
+      if (rIn instanceof HTMLInputElement) rIn.value = "";
+      if (wIn instanceof HTMLInputElement) wIn.value = "";
+      updateOwnerCloudCardUI();
+      const th = document.documentElement.dataset.theme || "";
+      status("Loading from server…", th);
+      const res = await ownerPullFromServer();
+      const elB = $("pfOwnerCloudBanner");
+      if (res.ok) {
+        if (elB instanceof HTMLElement) {
+          elB.hidden = true;
+          elB.textContent = "";
+          elB.className = "card2 mt";
+        }
+        status("Cloud connected — loaded portfolio from server", th);
+      } else {
+        if (elB instanceof HTMLElement) {
+          elB.hidden = false;
+          elB.className = "card2 mt globalApiBannerErr";
+          elB.innerHTML = formatOwnerCloudPullErrorHtml(res);
+        }
+        status("Could not load from server — check keys match Render (see red banner).", th);
+      }
+      renderPf();
+      updateFamilyNavHrefs();
+    });
+    $("btnPfCloudReload")?.addEventListener("click", async () => {
+      if (!isOwnerCloudSyncActive()) {
+        status("Connect with Save & load from server first.");
+        return;
+      }
+      const th = document.documentElement.dataset.theme || "";
+      status("Reloading from server…", th);
+      const res = await ownerPullFromServer();
+      if (res.ok) {
+        status("Reloaded from server", th);
+        renderPf();
+      } else {
+        const elB = $("pfOwnerCloudBanner");
+        if (elB instanceof HTMLElement) {
+          elB.hidden = false;
+          elB.className = "card2 mt globalApiBannerErr";
+          elB.innerHTML = formatOwnerCloudPullErrorHtml(res);
+        }
+        status("Reload failed — see banner", th);
+      }
+    });
+    $("btnPfCloudDisc")?.addEventListener("click", () => {
+      if (!confirm("Disconnect cloud on this device? Local portfolio data stays in this browser; the server is unchanged.")) return;
+      clearOwnerCloudKeysOnDevice();
+      updateOwnerCloudCardUI();
+      const elB = $("pfOwnerCloudBanner");
+      if (elB instanceof HTMLElement) {
+        elB.hidden = true;
+        elB.textContent = "";
+        elB.className = "card2 mt";
+      }
+      status("Cloud disconnected on this device", document.documentElement.dataset.theme || "");
+      renderPf();
+    });
     $("btnImp")?.addEventListener("click", async () => {
       const f = $("csv")?.files?.[0];
       if (!f) {
@@ -2497,13 +2698,21 @@ function wire() {
             elOb.innerHTML = formatOwnerCloudPullErrorHtml(res);
           }
           const st =
-            (res.http === 403 && "Read token rejected — re-open the one-time link with the values from Render.") ||
+            (res.http === 403 && "Read token rejected — use the Cloud portfolio card (read/write from Render) or your one-time setup link.") ||
             (res.http === 404 && "No snapshot on the server — publish from a device that has your data (see banner).") ||
             "Owner sync: could not load the server copy (see red banner).";
           status(st, th);
         }
       } else {
         status("Portfolio", th);
+      }
+      const occ = $("pfOwnerCloudCard");
+      if (occ instanceof HTMLElement) {
+        occ.hidden = _pfSharedBundle != null;
+        if (!occ.hidden) {
+          updateOwnerCloudCardUI();
+          void applyPfServerHealthHint();
+        }
       }
       renderPf();
       updateFamilyNavHrefs();
