@@ -723,6 +723,28 @@ function ensurePfBrokerShape(brokers) {
 function migratePortfolioBundleShape(bundle) {
   if (!bundle || bundle.v !== 2 || !bundle.brokers) return false;
   let changed = false;
+  // Defensive migration: accept older/typo broker keys from published snapshots.
+  // Some browsers may pull a snapshot whose keys differ slightly; map aliases into the canonical IDs.
+  try {
+    const br = bundle.brokers;
+    const mv = (from, to) => {
+      if (!br || typeof br !== "object") return false;
+      if (!br[from] || !Array.isArray(br[from].rows) || !br[from].rows.length) return false;
+      if (!br[to]) br[to] = { rows: [] };
+      if (!Array.isArray(br[to].rows)) br[to].rows = [];
+      if (br[to].rows.length) return false; // do not merge silently; only fill empty canonical ledger
+      br[to].rows = br[from].rows;
+      delete br[from];
+      return true;
+    };
+    if (mv("insurances", PF_INSURANCE)) changed = true;
+    if (mv("insurance_policies", PF_INSURANCE)) changed = true;
+    if (mv("fixeddeposits", PF_FIXED_DEPOSIT)) changed = true;
+    if (mv("fixed_deposits", PF_FIXED_DEPOSIT)) changed = true;
+    if (mv("fixedDeposit", PF_FIXED_DEPOSIT)) changed = true;
+  } catch {
+    /* ignore */
+  }
   const insRows = bundle.brokers[PF_INSURANCE]?.rows;
   if (Array.isArray(insRows)) {
     for (const r of insRows) {
@@ -6535,7 +6557,7 @@ function renderPfInsuranceTable(el) {
   const foot = !multi && oneCcy
     ? `<tr class="tot"><td colspan="6"><strong>Total</strong></td><td class="pfNum"><strong>${esc(fmtMoney(oneCcy, tVal))}</strong></td><td class="pfNum pfPlCol ${tPl >= 0 ? "plp" : "pln"}"><strong>${esc(fmtMoney(oneCcy, tPl))}</strong></td><td></td><td></td></tr>`
     : `<tr class="tot"><td colspan="11" class="muted">Several currencies in this provider — row amounts stay native. See the <strong>By ledger (€)</strong> block at the <strong>top</strong> of the page.</td></tr>`;
-  el.innerHTML = `<div class="pfTableWrap" role="region" aria-label="Insurance policies"><table class="pfHoldingsTbl pfAltHoldingsTbl pfAltLedgerTbl"><colgroup>
+  el.innerHTML = `<div class="pfTableWrap" role="region" aria-label="Insurance policies"><table class="pfHoldingsTbl pfAltHoldingsTbl pfAltLedgerTbl pfInsLedger"><colgroup>
     <col class="pfAltColPol" /><col class="pfAltColNo" /><col class="pfAltColDate" /><col class="pfAltColNum" /><col class="pfAltColNumWide" /><col class="pfAltColNum" /><col class="pfAltColNumSm" /><col class="pfAltColVal" /><col class="pfAltColPl" /><col class="pfAltColCcy" /><col class="pfAltColAct" />
   </colgroup><thead><tr>
     <th class="pfThWrap">Policy</th><th class="pfThWrap">Policy #</th><th class="pfThWrap">Bought</th><th class="pfNum">At purchase</th><th class="pfNum pfThWrap">Premiums</th><th class="pfNum pfThWrap">Invested</th><th class="pfNum pfThWrap">Growth<span class="pfThSub">% p.a.</span></th><th class="pfNum pfThWrap">Value<span class="pfThSub">est.</span></th><th class="pfNum pfPlCol pfThWrap">Return<span class="pfThSub">est.</span></th><th class="pfThWrap">Ccy</th><th class="pfActCol pfThWrap">Actions</th>

@@ -619,6 +619,24 @@ body {
   }
 }
 
+@media (max-width: 860px) {
+  /* Insurance: reduce clutter on narrow screens (scroll still available). */
+  .pfHoldingsTbl.pfAltLedgerTbl.pfInsLedger col.pfAltColNo,
+  .pfHoldingsTbl.pfAltLedgerTbl.pfInsLedger col.pfAltColNumSm,
+  .pfHoldingsTbl.pfAltLedgerTbl.pfInsLedger col.pfAltColCcy {
+    display: none;
+    width: 0;
+  }
+  .pfHoldingsTbl.pfAltLedgerTbl.pfInsLedger th:nth-child(2),
+  .pfHoldingsTbl.pfAltLedgerTbl.pfInsLedger td:nth-child(2),
+  .pfHoldingsTbl.pfAltLedgerTbl.pfInsLedger th:nth-child(7),
+  .pfHoldingsTbl.pfAltLedgerTbl.pfInsLedger td:nth-child(7),
+  .pfHoldingsTbl.pfAltLedgerTbl.pfInsLedger th:nth-child(10),
+  .pfHoldingsTbl.pfAltLedgerTbl.pfInsLedger td:nth-child(10) {
+    display: none;
+  }
+}
+
 .actions {
   display: flex;
   gap: 8px;
