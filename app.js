@@ -230,7 +230,17 @@ function ensurePfRowId(r) {
 function sumInsurancePayments(r) {
   const arr = Array.isArray(r?.payments) ? r.payments : [];
   let s = 0;
-  for (const p of arr) s += num(p?.amount);
+  const vp = num(r?.valueAtPurchase);
+  const pdt = ymdFromFlexibleDateInput(String(r?.purchaseDate || "").trim());
+  for (const p of arr) {
+    const amt = num(p?.amount);
+    if (amt <= 0) continue;
+    const ds = ymdFromFlexibleDateInput(String(p?.date || "").trim());
+    // Avoid double-counting when someone logs the first premium again:
+    // valueAtPurchase already represents the initial lump on purchaseDate.
+    if (vp > 0 && pdt && ds === pdt && Math.abs(amt - vp) < 0.005) continue;
+    s += amt;
+  }
   return s;
 }
 
@@ -507,6 +517,7 @@ function getInsurancePremiumFlowsForMetrics(r) {
     if (amt <= 0) continue;
     const ds = ymdFromFlexibleDateInput(String(p?.date || "").trim());
     if (!ds) continue;
+    if (vp > 0 && pdt && ds === pdt && Math.abs(amt - vp) < 0.005) continue;
     flows.push({ ymd: ds, amount: amt });
   }
   const today = new Date();
@@ -6589,6 +6600,14 @@ function handlePfTableClick(ev) {
     const row = rows.find((r) => pfRowId(r) === rid || String(r.sym || "") === rid);
     if (!row || !isInsuranceAltRow(row)) return;
     if (!Array.isArray(row.payments)) row.payments = [];
+    const vp = num(row.valueAtPurchase);
+    const pdt = ymdFromFlexibleDateInput(String(row.purchaseDate || "").trim());
+    if (vp > 0 && pdt && ds === pdt && Math.abs(amt - vp) < 0.005) {
+      status(
+        `Not logged: that duplicates the initial premium (Value at purchase) on ${formatYmdAsDisplay(pdt)}. If you meant an extra payment, change the date or amount.`,
+      );
+      return;
+    }
     row.payments.push({ date: ds, amount: amt });
     savePfBundle(bundle);
     renderPf();
