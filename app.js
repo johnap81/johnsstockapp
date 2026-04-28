@@ -225,24 +225,67 @@ function insuranceInvestedTotal(r) {
 }
 
 /**
+ * Parse a calendar day from ISO `YYYY-MM-DD` or European `DD.MM.YYYY` (day/month may be 1–2 digits).
  * @param {string} s
  * @returns {Date | null}
  */
 function parseLocalYmdToDate(s) {
   const t = String(s || "").trim();
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(t);
-  if (!m) return null;
-  const y = Number(m[1]);
-  const mo = Number(m[2]);
-  const d = Number(m[3]);
-  if (!y || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
-  return new Date(y, mo - 1, d);
+  let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(t);
+  if (m) {
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    if (!y || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+    return new Date(y, mo - 1, d);
+  }
+  m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(t);
+  if (m) {
+    const d = Number(m[1]);
+    const mo = Number(m[2]);
+    const y = Number(m[3]);
+    if (!y || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+    return new Date(y, mo - 1, d);
+  }
+  return null;
 }
 
 /** @param {Date} d */
 function ymdFromLocalDate(d) {
   if (!(d instanceof Date) || Number.isNaN(d.getTime())) return "";
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Normalize user/CSV date input to `YYYY-MM-DD` for storage, or "" if invalid. */
+function ymdFromFlexibleDateInput(s) {
+  const d = parseLocalYmdToDate(s);
+  return d ? ymdFromLocalDate(d) : "";
+}
+
+/** @param {Date} d */
+function formatDateDdMmYyyy(d) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return "—";
+  return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}.${d.getFullYear()}`;
+}
+
+/** Display a stored or pasted date as DD.MM.YYYY (accepts ISO or DD.MM.YYYY input). */
+function formatYmdAsDisplay(raw) {
+  const t = String(raw || "").trim();
+  if (!t) return "—";
+  const d = parseLocalYmdToDate(t);
+  if (!d) return t;
+  return formatDateDdMmYyyy(d);
+}
+
+/** ECB / FX meta: plain YYYY-MM-DD or any parseable day string → DD.MM.YYYY. */
+function formatFxRefDateDisplay(raw) {
+  const t = String(raw || "").trim();
+  if (!t) return "—";
+  const head = t.slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(head)) return formatYmdAsDisplay(head);
+  const d = new Date(t);
+  if (Number.isNaN(d.getTime())) return t;
+  return formatDateDdMmYyyy(d);
 }
 
 /**
@@ -266,7 +309,9 @@ function insuranceInstalmentDedupKey(dt, schedule) {
 function insuranceManualInstalmentDedupKeys(r, schedule) {
   const keys = new Set();
   const vp = num(r?.valueAtPurchase);
-  const pdt = r?.purchaseDate && String(r.purchaseDate).trim() ? String(r.purchaseDate).trim().slice(0, 10) : "";
+  const pdt = ymdFromFlexibleDateInput(
+    r?.purchaseDate && String(r.purchaseDate).trim() ? String(r.purchaseDate).trim() : "",
+  );
   if (vp > 0 && pdt) {
     const dt0 = parseLocalYmdToDate(pdt);
     if (dt0) {
@@ -275,7 +320,8 @@ function insuranceManualInstalmentDedupKeys(r, schedule) {
     }
   }
   for (const p of Array.isArray(r?.payments) ? r.payments : []) {
-    const dt = parseLocalYmdToDate(String(p?.date || "").trim());
+    const y = ymdFromFlexibleDateInput(String(p?.date || "").trim());
+    const dt = y ? parseLocalYmdToDate(y) : null;
     if (!dt) continue;
     const k = insuranceInstalmentDedupKey(dt, schedule);
     if (k) keys.add(k);
@@ -350,12 +396,9 @@ function resolvePremiumScheduleForCalc(r) {
   if (sched0.enabled === false || String(sched0.enabled).toLowerCase() === "false") return null;
   const freq = String(sched0.frequency || "").trim().toLowerCase();
   if (freq !== "monthly" && freq !== "yearly") return null;
-  let anchorYmd = String(sched0.anchorYmd || "").trim().slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(anchorYmd)) {
-    const pur = String(r?.purchaseDate || "").trim().slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(pur)) anchorYmd = pur;
-  }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(anchorYmd)) return null;
+  let anchorYmd = ymdFromFlexibleDateInput(String(sched0.anchorYmd || "").trim());
+  if (!anchorYmd) anchorYmd = ymdFromFlexibleDateInput(String(r?.purchaseDate || "").trim());
+  if (!anchorYmd) return null;
   let baseAmount = num(sched0.baseAmount);
   if (!(baseAmount > 0)) baseAmount = num(r?.valueAtPurchase);
   if (!(baseAmount > 0)) return null;
@@ -380,12 +423,13 @@ function resolvePremiumScheduleForCalc(r) {
 /** @param {object} row @returns {boolean} */
 function applyInsuranceQuickMonthlySchedule(row) {
   if (!row || !isInsuranceAltRow(row)) return false;
-  const pdt = String(row.purchaseDate || "").trim().slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(pdt)) return false;
+  const pdt = ymdFromFlexibleDateInput(String(row.purchaseDate || "").trim());
+  if (!pdt) return false;
   const base = num(row.valueAtPurchase);
   if (!(base > 0)) return false;
   const dt = parseLocalYmdToDate(pdt);
   if (!dt) return false;
+  row.purchaseDate = pdt;
   row.premiumSchedule = {
     enabled: true,
     frequency: "monthly",
@@ -436,12 +480,13 @@ function getInsuranceAutoScheduledPremiums(r, untilD) {
 function getInsurancePremiumFlowsForMetrics(r) {
   const flows = [];
   const vp = num(r?.valueAtPurchase);
-  const pdt = r?.purchaseDate && String(r.purchaseDate).trim() ? String(r.purchaseDate).trim().slice(0, 10) : "";
+  const pdtRaw = r?.purchaseDate && String(r.purchaseDate).trim() ? String(r.purchaseDate).trim() : "";
+  const pdt = ymdFromFlexibleDateInput(pdtRaw);
   if (vp > 0 && pdt) flows.push({ ymd: pdt, amount: vp });
   for (const p of Array.isArray(r?.payments) ? r.payments : []) {
     const amt = num(p?.amount);
     if (amt <= 0) continue;
-    const ds = p?.date && String(p.date).trim() ? String(p.date).trim().slice(0, 10) : "";
+    const ds = ymdFromFlexibleDateInput(String(p?.date || "").trim());
     if (!ds) continue;
     flows.push({ ymd: ds, amount: amt });
   }
@@ -470,8 +515,8 @@ function normalizeFdMovementsMerged(r) {
   const arr = Array.isArray(r?.fdMovements) ? r.fdMovements : [];
   const tmp = [];
   for (const m of arr) {
-    const ds = String(m?.date || "").trim().slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) continue;
+    const ds = ymdFromFlexibleDateInput(String(m?.date || "").trim());
+    if (!ds) continue;
     const delta = num(m?.amount);
     if (delta === 0) continue;
     tmp.push({ date: ds, delta });
@@ -501,12 +546,14 @@ function computeFdSimpleValue(r) {
     if (r.fdValMode === "simple" || r.fdValMode == null) return { value: balance, interest: 0, days: 0, principalNow: balance };
     return { value: num(r.currentValue) || balance, interest: 0, days: 0, principalNow: balance };
   }
-  const a = parseLocalYmdToDate(String(open).trim().slice(0, 10));
+  const openIso = ymdFromFlexibleDateInput(String(open).trim());
+  const a = openIso ? parseLocalYmdToDate(openIso) : null;
   if (!a) return { value: balance, interest: 0, days: 0, principalNow: balance };
   a.setHours(0, 0, 0, 0);
   const now = new Date();
   now.setHours(0, 0, 0, 0);
-  const matD = r.maturityDate ? parseLocalYmdToDate(String(r.maturityDate)) : null;
+  const matIso = r.maturityDate ? ymdFromFlexibleDateInput(String(r.maturityDate).trim()) : "";
+  const matD = matIso ? parseLocalYmdToDate(matIso) : null;
   let end = new Date(now);
   if (matD) {
     matD.setHours(0, 0, 0, 0);
@@ -624,14 +671,14 @@ function getInsuranceRowMetrics(r) {
   if (v <= 0) v = num(r.currentValue) > 0 ? num(r.currentValue) : inv;
   const nPay = Array.isArray(r.payments) ? r.payments.length : 0;
   const nAuto = r.premiumSchedule?.enabled ? getInsuranceAutoScheduledPremiums(r, today).length : 0;
-  const autoBit = nAuto ? ` · ${nAuto} auto instalment(s)` : "";
+  const autoBit = nAuto ? ` · ${nAuto} auto` : "";
   const ccyU = normalizeCcyForFx(String(r.ccy || "INR").toUpperCase());
   const ret = v - inv;
   return {
     value: v,
     inv,
     pl: ret,
-    sub: `Daily compound · ${fmtN(g, 2)}% p.a.${nPay ? ` · ${nPay} logged` : ""}${autoBit}`,
+    sub: `Compound ${fmtN(g, 2)}%/yr${nPay ? ` · ${nPay} log` : ""}${autoBit}`,
     mode: "compound",
   };
 }
@@ -2101,7 +2148,7 @@ async function enrichInstrPfHoldEur(sym, ex) {
   }
   const eurPer = j.eur_per_unit;
   const src = esc(j.source || "ECB reference");
-  const dt = esc(j.date || "");
+  const dt = esc(formatFxRefDateDisplay(j.date || ""));
   const discFoot = j.disclaimer ? `<p class="sml muted instrPfEurDisc">${esc(j.disclaimer)}</p>` : "";
   hits.forEach((hit, i) => {
     const strip = root.querySelector(`[data-instr-pf-eur="${i}"]`);
@@ -2146,9 +2193,12 @@ function setInstrHistoryContext(bars, rsExtra) {
   }
 }
 
+/** Thousands separator `,` and `.` decimals (e.g. 10,450.00) — independent of the device locale. */
+const JSA_DISPLAY_NUMBER_LOCALE = "en-US";
+
 function fmtN(n, d = 2) {
   if (!Number.isFinite(n)) return "—";
-  return new Intl.NumberFormat(undefined, {
+  return new Intl.NumberFormat(JSA_DISPLAY_NUMBER_LOCALE, {
     minimumFractionDigits: d,
     maximumFractionDigits: d,
   }).format(n);
@@ -3013,7 +3063,7 @@ function wire() {
         const row = {
           policyName: pn,
           policyNo: val("fPolNo"),
-          purchaseDate: val("fPolPur"),
+          purchaseDate: ymdFromFlexibleDateInput(val("fPolPur")) || val("fPolPur"),
           valueAtPurchase: num(val("fPolV0")),
           growthPct: num(val("fPolGr")),
           currentValue: insM === "manual" ? curMan : 0,
@@ -3066,12 +3116,12 @@ function wire() {
           fdBank: bank,
           fdName: name,
           fdRef: val("fFdRef"),
-          openDate: val("fFdOpen"),
+          openDate: ymdFromFlexibleDateInput(val("fFdOpen")) || val("fFdOpen"),
           principal: pr,
           ratePct: num(val("fFdRate")),
           currentValue: fdM === "manual" ? curFd : 0,
           fdValMode: fdM,
-          maturityDate: val("fFdMat"),
+          maturityDate: ymdFromFlexibleDateInput(val("fFdMat")) || val("fFdMat"),
           ccy,
           fdCountry: val("fFdCtry"),
           fdMovements: [],
@@ -4791,7 +4841,7 @@ function drawAreaCloseHistory(canvas, bars, rangeLabel, overlays) {
     ctx.fillStyle = axis;
     ctx.font = "11px system-ui,sans-serif";
     ctx.textAlign = "right";
-    ctx.fillText(val < 100 ? val.toFixed(2) : val.toFixed(1), padL - 6, y + 4);
+    ctx.fillText(fmtN(val, Math.abs(val) < 100 ? 2 : 1), padL - 6, y + 4);
   }
   drawStudyOverlays(ctx, { padL, innerW, padT, innerH, lo, hi, n, isLight }, closes, overlays);
   ctx.beginPath();
@@ -4820,10 +4870,9 @@ function drawAreaCloseHistory(canvas, bars, rangeLabel, overlays) {
   if (t0 && t1) {
     const d0 = new Date(Number(t0) * 1000);
     const d1 = new Date(Number(t1) * 1000);
-    const opt = { month: "short", day: "numeric" };
-    ctx.fillText(d0.toLocaleDateString(undefined, opt), padL, h - 8);
+    ctx.fillText(formatDateDdMmYyyy(d0), padL, h - 8);
     ctx.textAlign = "right";
-    ctx.fillText(d1.toLocaleDateString(undefined, opt), w - padR, h - 8);
+    ctx.fillText(formatDateDdMmYyyy(d1), w - padR, h - 8);
   }
   ctx.textAlign = "left";
   ctx.fillText(`${rangeLabel} · close (area)`, padL, 12);
@@ -4877,7 +4926,7 @@ function drawOhlcCandles(canvas, ohlc, rangeLabel, modeLabel, overlays, studyClo
     ctx.fillStyle = axis;
     ctx.font = "11px system-ui,sans-serif";
     ctx.textAlign = "right";
-    ctx.fillText(val < 100 ? val.toFixed(2) : val.toFixed(1), padL - 6, y + 4);
+    ctx.fillText(fmtN(val, Math.abs(val) < 100 ? 2 : 1), padL - 6, y + 4);
   }
   if (sc) drawStudyOverlays(ctx, { padL, innerW, padT, innerH, lo, hi, n, isLight }, sc, overlays);
   const slot = n > 1 ? innerW / (n - 1) : innerW;
@@ -4914,11 +4963,10 @@ function drawOhlcCandles(canvas, ohlc, rangeLabel, modeLabel, overlays, studyClo
   if (t0 && t1) {
     const d0 = new Date(Number(t0) * 1000);
     const d1 = new Date(Number(t1) * 1000);
-    const opt = { month: "short", day: "numeric" };
     ctx.textAlign = "left";
-    ctx.fillText(d0.toLocaleDateString(undefined, opt), padL, h - 8);
+    ctx.fillText(formatDateDdMmYyyy(d0), padL, h - 8);
     ctx.textAlign = "right";
-    ctx.fillText(d1.toLocaleDateString(undefined, opt), w - padR, h - 8);
+    ctx.fillText(formatDateDdMmYyyy(d1), w - padR, h - 8);
   }
   ctx.textAlign = "left";
   ctx.fillText(`${rangeLabel} · ${modeLabel}`, padL, 12);
@@ -5817,12 +5865,10 @@ function readPremiumScheduleFromPfAddForm() {
   const freq = String(val("fPolSchFreq") || "off").toLowerCase();
   if (!freq || freq === "off" || freq === "none") return null;
   const frequency = freq === "yearly" || freq === "annual" ? "yearly" : "monthly";
-  let anchor = String(val("fPolSchAnchor") || "").trim().slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(anchor)) {
-    const pur = String(val("fPolPur") || "").trim().slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(pur)) anchor = pur;
-  }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(anchor)) return null;
+  let anchor =
+    ymdFromFlexibleDateInput(String(val("fPolSchAnchor") || "").trim()) ||
+    ymdFromFlexibleDateInput(String(val("fPolPur") || "").trim());
+  if (!anchor) return null;
   let base = num(val("fPolSchAmt"));
   if (!(base > 0)) base = num(val("fPolV0"));
   if (!(base > 0)) return null;
@@ -5871,14 +5917,17 @@ function configureInsurancePremiumScheduleInteractive(row) {
     if (mS === null) return false;
     monthOfYear = Math.max(1, Math.min(12, Math.floor(num(mS)) || 1));
   }
+  const defAnch = ymdFromFlexibleDateInput(
+    String(row.premiumSchedule?.anchorYmd || row.purchaseDate || "").trim(),
+  );
   const anchorS = window.prompt(
-    "First due date (YYYY-MM-DD) — same as first instalment",
-    String(row.premiumSchedule?.anchorYmd || row.purchaseDate || "").slice(0, 10),
+    "First due date (DD.MM.YYYY or YYYY-MM-DD) — first instalment",
+    defAnch ? formatYmdAsDisplay(defAnch) : "",
   );
   if (anchorS === null) return false;
-  const anchorYmd = String(anchorS).trim().slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(anchorYmd)) {
-    status("First due date must be YYYY-MM-DD");
+  const anchorYmd = ymdFromFlexibleDateInput(String(anchorS).trim());
+  if (!anchorYmd) {
+    status("First due date must be DD.MM.YYYY or YYYY-MM-DD");
     return false;
   }
   const baseS = window.prompt(
@@ -6025,7 +6074,7 @@ function paintPfAddFieldsMount() {
       <label class="lbl pfAddField">Policy number
         <input class="in" id="fPolNo" placeholder="—" autocomplete="off" />
       </label>
-      <label class="lbl pfAddField">Date of purchase
+      <label class="lbl pfAddField">Date of purchase <span class="muted sml">(shown as DD.MM.YYYY)</span>
         <input class="in" id="fPolPur" type="date" />
       </label>
       <label class="lbl pfAddField">Value at purchase
@@ -6050,7 +6099,7 @@ function paintPfAddFieldsMount() {
           <label class="lbl pfAddField" style="margin:0">Month for yearly (1–12)
             <input class="in" id="fPolSchMon" type="number" min="1" max="12" value="10" inputmode="numeric" />
           </label>
-          <label class="lbl pfAddField" style="margin:0">First due date
+          <label class="lbl pfAddField" style="margin:0">First due date <span class="muted sml">(DD.MM.YYYY in tables)</span>
             <input class="in" id="fPolSchAnchor" type="date" />
           </label>
           <label class="lbl pfAddField" style="margin:0">Instalment amount (anchor year)
@@ -6118,7 +6167,7 @@ function paintPfAddFieldsMount() {
       <label class="lbl pfAddField">Reference / receipt # <span class="muted sml">(opt.)</span>
         <input class="in" id="fFdRef" placeholder="—" autocomplete="off" />
       </label>
-      <label class="lbl pfAddField">Open date
+      <label class="lbl pfAddField">Open date <span class="muted sml">(shown as DD.MM.YYYY)</span>
         <input class="in" id="fFdOpen" type="date" />
       </label>
       <label class="lbl pfAddField">Principal
@@ -6127,7 +6176,7 @@ function paintPfAddFieldsMount() {
       <label class="lbl pfAddField">Rate % p.a. <span class="muted sml">(for auto mode)</span>
         <input class="in" id="fFdRate" inputmode="decimal" autocomplete="off" />
       </label>
-      <label class="lbl pfAddField">Maturity date <span class="muted sml">(accrual stops here)</span>
+      <label class="lbl pfAddField">Maturity date <span class="muted sml">(accrual stops; shown as DD.MM.YYYY)</span>
         <input class="in" id="fFdMat" type="date" />
       </label>
       <label class="lbl pfAddField">Current / maturity value <span class="muted sml">(manual mode)</span>
@@ -6251,15 +6300,15 @@ function handlePfTableClick(ev) {
       status("Enter a positive amount");
       return;
     }
-    const defD = new Date().toISOString().slice(0, 10);
+    const defD = ymdFromLocalDate(new Date());
     const dateS = window.prompt(
-      "Effective date YYYY-MM-DD (interest accrues on the new balance from this date)",
-      defD,
+      "Effective date (DD.MM.YYYY or YYYY-MM-DD; interest from this date on the new balance)",
+      formatYmdAsDisplay(defD),
     );
     if (dateS === null) return;
-    const ds = String(dateS || "").trim().slice(0, 10) || defD;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) {
-      status("Use date format YYYY-MM-DD");
+    const ds = ymdFromFlexibleDateInput(String(dateS || "").trim()) || defD;
+    if (!ds) {
+      status("Use DD.MM.YYYY or YYYY-MM-DD");
       return;
     }
     const bundleFd = loadPfBundle();
@@ -6269,7 +6318,7 @@ function handlePfTableClick(ev) {
     rowFd.fdMovements.push({ date: ds, amount: amt });
     savePfBundle(bundleFd);
     renderPf();
-    status(`Principal +${fmtN(amt, 2)} · ${ds}`);
+    status(`Principal +${fmtN(amt, 2)} · ${formatYmdAsDisplay(ds)}`);
     return;
   }
   const fdWd = t.closest("[data-pf-fdwd]");
@@ -6283,12 +6332,12 @@ function handlePfTableClick(ev) {
       status("Enter a positive amount");
       return;
     }
-    const defD = new Date().toISOString().slice(0, 10);
-    const dateS = window.prompt("Effective date YYYY-MM-DD", defD);
+    const defD = ymdFromLocalDate(new Date());
+    const dateS = window.prompt("Effective date (DD.MM.YYYY or YYYY-MM-DD)", formatYmdAsDisplay(defD));
     if (dateS === null) return;
-    const ds = String(dateS || "").trim().slice(0, 10) || defD;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) {
-      status("Use date format YYYY-MM-DD");
+    const ds = ymdFromFlexibleDateInput(String(dateS || "").trim()) || defD;
+    if (!ds) {
+      status("Use DD.MM.YYYY or YYYY-MM-DD");
       return;
     }
     const bundleW = loadPfBundle();
@@ -6303,7 +6352,7 @@ function handlePfTableClick(ev) {
     rowW.fdMovements.push({ date: ds, amount: -amt });
     savePfBundle(bundleW);
     renderPf();
-    status(`Principal −${fmtN(amt, 2)} · ${ds}`);
+    status(`Principal −${fmtN(amt, 2)} · ${formatYmdAsDisplay(ds)}`);
     return;
   }
   const rm = t.closest("[data-pf-rm]");
@@ -6331,15 +6380,15 @@ function handlePfTableClick(ev) {
       status("Enter a positive amount");
       return;
     }
-    const defD = new Date().toISOString().slice(0, 10);
+    const defD = ymdFromLocalDate(new Date());
     const dateS = window.prompt(
-      "Date this premium was paid — use YYYY-MM-DD (e.g. monthly or yearly instalments)",
-      defD,
+      "Date this premium was paid (DD.MM.YYYY or YYYY-MM-DD)",
+      formatYmdAsDisplay(defD),
     );
     if (dateS === null) return;
-    const ds = String(dateS || "").trim() || defD;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) {
-      status("Use date format YYYY-MM-DD");
+    const ds = ymdFromFlexibleDateInput(String(dateS || "").trim()) || defD;
+    if (!ds) {
+      status("Use DD.MM.YYYY or YYYY-MM-DD");
       return;
     }
     const bundle = loadPfBundle();
@@ -6350,7 +6399,7 @@ function handlePfTableClick(ev) {
     row.payments.push({ date: ds, amount: amt });
     savePfBundle(bundle);
     renderPf();
-    status(`Premium logged · ${ds}`);
+    status(`Premium logged · ${formatYmdAsDisplay(ds)}`);
   }
 }
 
@@ -6443,23 +6492,24 @@ function renderPfInsuranceTable(el) {
           !schEffective && autoSum <= 0
             ? `<details class="pfInlineHint"><summary>Auto pay</summary><div class="muted sml">Use <strong>Monthly</strong> or <strong>Schedule</strong>.</div></details>`
             : "";
-        const canQuick =
-          !schEffective &&
-          /^\d{4}-\d{2}-\d{2}$/.test(String(r.purchaseDate || "").trim().slice(0, 10)) &&
-          num(r.valueAtPurchase) > 0;
+        const purIso = ymdFromFlexibleDateInput(String(r.purchaseDate || "").trim());
+        const canQuick = !schEffective && Boolean(purIso) && num(r.valueAtPurchase) > 0;
         const pName = String(r.policyName || "—");
-        const premSub = autoSum > 0 ? `<span class="pfCellSub">+ ${esc(fmtMoney(ccy, autoSum))} auto</span>` : "";
+        const premSub =
+          autoSum > 0
+            ? `<span class="pfCellSub" title="Auto-scheduled premiums included in Invested">${esc(fmtMoney(ccy, autoSum))} <span class="muted">auto</span></span>`
+            : "";
         const valSub = msub ? `<span class="pfCellSub" title="${esc(msub)}">${esc(msub)}</span>` : "";
         return `<tr>
           <td class="sml pfTdPol" title="${esc(pName)}"><strong>${esc(pName)}</strong>${coHint}</td>
           <td class="sml">${esc(r.policyNo || "—")}</td>
-          <td class="sml">${esc(r.purchaseDate || "—")}</td>
-          <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, num(r.valueAtPurchase)))}</span></div></td>
+          <td class="sml pfDateCell">${esc(formatYmdAsDisplay(r.purchaseDate))}</td>
+          <td class="pfNum">${esc(fmtMoney(ccy, num(r.valueAtPurchase)))}</td>
           <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, ps))}</span>${premSub}${noAutoHint}</div></td>
-          <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, invested))}</span></div></td>
-          <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtN(num(r.growthPct), 2))}%</span></div></td>
+          <td class="pfNum">${esc(fmtMoney(ccy, invested))}</td>
+          <td class="pfNum">${esc(fmtN(num(r.growthPct), 2))}%</td>
           <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, val))}</span>${valSub}</div></td>
-          <td class="pfNum pfPlCol ${cls}"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, pl))}</span></div></td>
+          <td class="pfNum pfPlCol ${cls}">${esc(fmtMoney(ccy, pl))}</td>
           <td class="sml">${esc(formatCcyLabel(ccy))}</td>
           <td class="pfActCol"><div class="pfActBtns"><button type="button" class="btn ghost smlBtn" data-pf-prem="${esc(rid)}" title="Log a premium payment">Premium</button>
             ${canQuick ? `<button type="button" class="btn ghost smlBtn" data-pf-schq="${esc(rid)}" title="Monthly schedule from purchase date and value at purchase">Monthly</button>` : ""}
@@ -6573,13 +6623,13 @@ function renderPfFdTable(el) {
           <td class="sml">${esc(r.fdCountry || "—")}</td>
           <td class="sml pfTdPol" title="${esc(fdNm)}"><strong>${esc(fdNm)}</strong></td>
           <td class="sml">${esc(r.fdRef || "—")}</td>
-          <td class="sml">${esc(r.openDate || "—")}</td>
+          <td class="sml pfDateCell">${esc(formatYmdAsDisplay(r.openDate))}</td>
           <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, prBook))}</span>${prSub}</div></td>
-          <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtN(num(r.ratePct), 2))}%</span></div></td>
+          <td class="pfNum">${esc(fmtN(num(r.ratePct), 2))}%</td>
           <td class="pfNum"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, val))}</span>${fdValSub}</div></td>
-          <td class="sml">${esc(r.maturityDate || "—")}</td>
+          <td class="sml pfDateCell">${esc(formatYmdAsDisplay(r.maturityDate))}</td>
           <td>${esc(formatCcyLabel(ccy))}</td>
-          <td class="pfNum pfPlCol ${cls}"><div class="pfCellStack"><span class="pfCellMain">${esc(fmtMoney(ccy, pl))}</span></div></td>
+          <td class="pfNum pfPlCol ${cls}">${esc(fmtMoney(ccy, pl))}</td>
           <td class="pfActCol"><div class="pfActBtns"><button type="button" class="btn ghost smlBtn" data-pf-fdadd="${esc(rid)}" title="Add to principal">Add</button>
             <button type="button" class="btn ghost smlBtn" data-pf-fdwd="${esc(rid)}" title="Withdraw from principal">Withdraw</button>
             <button type="button" class="btn ghost smlBtn" data-pf-rm="${esc(rid)}" title="Remove this deposit">Remove</button></div>
@@ -6984,7 +7034,7 @@ async function refreshPfCombinedEur() {
         ? `<p class="muted sml" style="margin:8px 0 0">Missing FX: <strong>${esc([...miss].join(", "))}</strong></p>`
         : "";
     const src = esc(j.source || "ECB reference");
-    const dt = esc(j.date || "");
+    const dt = esc(formatFxRefDateDisplay(j.date || ""));
     const cell = (label, totE, costE, plE, nRows, legMiss) => {
       if (nRows <= 0) {
         return `<div class="pfEurCell"><span class="muted sml">${esc(label)}</span><div class="pfEurBig muted">—</div><p class="sml muted">No rows</p></div>`;
@@ -7066,7 +7116,7 @@ async function refreshPfT212Euro(rows, multi, oneCcy, tVal, tPl, eurTitle) {
         ? `<p class="muted sml">No ECB rate for <strong>${esc([...miss].join(", "))}</strong> — EUR totals exclude those row(s).</p>`
         : "";
     const src = esc(j.source || "ECB reference");
-    const dt = esc(j.date || "");
+    const dt = esc(formatFxRefDateDisplay(j.date || ""));
     if (!totE && !costE && miss.size) {
       box.innerHTML = `<p class="err">Could not convert any row to EUR (missing FX codes).</p>${missTxt}`;
       return;
@@ -7260,7 +7310,12 @@ function formatServerIsoLocal(iso) {
   try {
     const d = new Date(s);
     if (Number.isNaN(d.getTime())) return s;
-    return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mo = String(d.getMonth() + 1).padStart(2, "0");
+    const y = d.getFullYear();
+    const h = String(d.getHours()).padStart(2, "0");
+    const mi = String(d.getMinutes()).padStart(2, "0");
+    return `${dd}.${mo}.${y} ${h}:${mi}`;
   } catch {
     return s;
   }
@@ -7619,7 +7674,19 @@ function parseInsuranceCsv(text) {
       insCompany,
       payments,
     };
-    if (premiumSchedule) rowObj.premiumSchedule = premiumSchedule;
+    if (premiumSchedule) {
+      const anch = ymdFromFlexibleDateInput(String(premiumSchedule.anchorYmd || "").trim());
+      if (anch) premiumSchedule.anchorYmd = anch;
+      rowObj.premiumSchedule = premiumSchedule;
+    }
+    const pdNorm = ymdFromFlexibleDateInput(String(rowObj.purchaseDate || "").trim());
+    if (pdNorm) rowObj.purchaseDate = pdNorm;
+    for (const p of payments) {
+      if (p && p.date) {
+        const nd = ymdFromFlexibleDateInput(String(p.date).trim());
+        if (nd) p.date = nd;
+      }
+    }
     ensurePfRowId(rowObj);
     out.push(rowObj);
   }
@@ -7686,6 +7753,16 @@ function parseFdCsv(text) {
       fdCountry: iCtry >= 0 ? String(c[iCtry] || "").trim() : "",
       fdMovements,
     };
+    const od = ymdFromFlexibleDateInput(String(rowObj.openDate || "").trim());
+    if (od) rowObj.openDate = od;
+    const md = ymdFromFlexibleDateInput(String(rowObj.maturityDate || "").trim());
+    if (md) rowObj.maturityDate = md;
+    for (const m of fdMovements) {
+      if (m && m.date) {
+        const nd = ymdFromFlexibleDateInput(String(m.date).trim());
+        if (nd) m.date = nd;
+      }
+    }
     ensurePfRowId(rowObj);
     out.push(rowObj);
   }
