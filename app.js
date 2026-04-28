@@ -130,6 +130,23 @@ const PF_INS_CO_LABEL = {
   other: "Other (5th slot)",
 };
 const PF_INS_CO_KEY = "jsa.pf.insCompany";
+
+function pfInsuranceCompanyCounts(bundle) {
+  const out = {};
+  for (const id of PF_INS_CO_IDS) out[id] = 0;
+  try {
+    const rows = bundle?.brokers?.[PF_INSURANCE]?.rows;
+    if (!Array.isArray(rows)) return out;
+    for (const r of rows) {
+      const co = String(r?.insCompany || "other");
+      if (out[co] == null) out.other++;
+      else out[co]++;
+    }
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
 /** Last-selected MF sub-ledger when main “Mutual funds” tab is active (`mf_coin` / `mf_kuvera`). */
 const PF_MF_SUB_KEY = "jsa.pf.mfSub";
 /** UI grouping: MF ledgers map to main tab id `mf`. */
@@ -1306,6 +1323,49 @@ async function ownerPullFromServer() {
     return { ok: true };
   } catch (e) {
     return { ok: false, reason: "network", detail: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+async function peekServerPortfolioCounts() {
+  const rt = getOwnerCloudReadT();
+  if (!rt) return { ok: false, reason: "no_read_token" };
+  try {
+    const r = await fetch(`/api/shared/portfolio?token=${encodeURIComponent(rt)}`, { cache: "no-store" });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok || !j.bundle || typeof j.bundle !== "object") {
+      return { ok: false, reason: "server", http: r.status, detail: String(j.detail || j.error || `HTTP ${r.status}`) };
+    }
+    const b = j.bundle;
+    if (b.v !== 2 || !b.brokers) return { ok: false, reason: "bad_bundle" };
+    const full = { v: 2, brokers: b.brokers };
+    ensurePfBrokerShape(full.brokers);
+    migratePortfolioBundleShape(full);
+    const counts = {
+      totalRows: pfBundleRowCount(full),
+      insByCo: pfInsuranceCompanyCounts(full),
+      updated_at: String(j.updated_at || ""),
+    };
+    return { ok: true, counts };
+  } catch (e) {
+    return { ok: false, reason: "network", detail: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function restoreLocalBackupBeforePull() {
+  try {
+    const raw = (localStorage.getItem(K.pfBackupBeforePull) || "").trim();
+    if (!raw) return { ok: false, reason: "no_backup" };
+    const o = JSON.parse(raw);
+    const prevRaw = String(o?.raw || "").trim();
+    if (!prevRaw) return { ok: false, reason: "bad_backup" };
+    const prev = JSON.parse(prevRaw);
+    if (prev?.v !== 2 || !prev.brokers) return { ok: false, reason: "bad_bundle" };
+    ensurePfBrokerShape(prev.brokers);
+    migratePortfolioBundleShape(prev);
+    localStorage.setItem(K.pf, JSON.stringify(prev));
+    return { ok: true, t: String(o?.t || "") };
+  } catch (e) {
+    return { ok: false, reason: "error", detail: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -2751,9 +2811,12 @@ function portfolioHtml() {
         <button type="button" class="btn" id="btnPfCloudSave">Save &amp; load from server</button>
         <button type="button" class="btn ghost" id="btnPfCloudReload">Reload from server</button>
         <button type="button" class="btn ghost" id="btnPfCloudPush" title="Uploads this device’s current portfolio to the server (uses the write key saved on this device)">Push this device to server</button>
+        <button type="button" class="btn ghost" id="btnPfCloudCheck" title="Shows what is currently stored on the server (row counts) without changing this browser">Check server snapshot</button>
+        <button type="button" class="btn ghost" id="btnPfCloudRestore" title="Restores the automatic local backup made before the last server overwrite (if available)">Restore local backup</button>
         <button type="button" class="btn ghost" id="btnPfCopyFamilyLink" title="Copies a read-only link to send in a private message">Copy family link</button>
         <button type="button" class="btn ghost" id="btnPfCloudDisc">Disconnect on this device</button>
       </div>
+      <p class="sml muted" id="pfCloudDiag" style="margin:10px 0 0 0" role="status" aria-live="polite"></p>
     </section>
     <div id="pfSharedBanner" class="card2 mt" hidden aria-live="polite"></div>
     <div id="pfFamilyTools" class="card2 mt pfFamilyTools" hidden role="region" aria-label="Family read-only actions">
@@ -3069,6 +3132,34 @@ function wire() {
       } else {
         status(`Push failed — ${String(res?.detail || res?.reason || "unknown error")}`, th);
       }
+    });
+    $("btnPfCloudCheck")?.addEventListener("click", async () => {
+      const out = $("pfCloudDiag");
+      if (!(out instanceof HTMLElement)) return;
+      if (!isOwnerCloudSyncActive()) {
+        out.textContent = "Connect first (Save & load from server).";
+        return;
+      }
+      out.textContent = "Checking server snapshot…";
+      const res = await peekServerPortfolioCounts();
+      if (!res.ok) {
+        out.textContent = `Server snapshot check failed: ${String(res.detail || res.reason || "unknown")}`;
+        return;
+      }
+      const c = res.counts;
+      const insParts = PF_INS_CO_IDS.map((id) => `${PF_INS_CO_LABEL[id] || id}: ${c.insByCo[id] || 0}`).join(" · ");
+      out.textContent = `Server snapshot: ${c.totalRows} row(s) total${c.updated_at ? ` · updated ${c.updated_at}` : ""} · insurance: ${insParts}`;
+    });
+    $("btnPfCloudRestore")?.addEventListener("click", () => {
+      const out = $("pfCloudDiag");
+      if (!(out instanceof HTMLElement)) return;
+      const res = restoreLocalBackupBeforePull();
+      if (res.ok) {
+        out.textContent = `Restored local backup${res.t ? ` from ${res.t}` : ""}.`;
+        renderPf();
+        return;
+      }
+      out.textContent = `No restore available: ${String(res.detail || res.reason || "unknown")}`;
     });
     $("btnPfCloudDisc")?.addEventListener("click", () => {
       if (!confirm("Disconnect cloud on this device? Local portfolio data stays in this browser; the server is unchanged.")) return;
@@ -6514,7 +6605,15 @@ function renderPfInsuranceTable(el) {
     }),
   );
   if (!rows.length) {
-    el.innerHTML = `<p class="muted">No policies for <strong>${esc(PF_INS_CO_LABEL[co])}</strong> yet.</p>`;
+    const counts = pfInsuranceCompanyCounts(bundle);
+    const otherN = PF_INS_CO_IDS.filter((id) => id !== co && (counts[id] || 0) > 0);
+    const hint =
+      otherN.length > 0
+        ? `<p class="sml muted" style="margin:6px 0 0 0">This tab is empty, but you have policies under: <strong>${esc(
+            otherN.map((id) => `${PF_INS_CO_LABEL[id] || id} (${counts[id] || 0})`).join(", "),
+          )}</strong>. Try switching company tabs above.</p>`
+        : "";
+    el.innerHTML = `<p class="muted">No policies for <strong>${esc(PF_INS_CO_LABEL[co])}</strong> yet.</p>${hint}`;
     pfClearTableMountState();
     renderPfCharts([]);
     void refreshPfCombinedEur();
