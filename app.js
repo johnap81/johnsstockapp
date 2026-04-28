@@ -2,6 +2,8 @@ const K = {
   theme: "jsa.theme",
   notes: "jsa.notes",
   pf: "jsa.portfolio.v2",
+  /** Automatic local backup made right before overwriting from server pull. */
+  pfBackupBeforePull: "jsa.portfolio.v2.backupBeforePull",
   wl: "jsa.watchlist.v1",
   chartOl: "jsa.chartOverlays",
   /** Prefix for `sessionStorage` keys — last good `/api/history` per symbol when live fetch fails. */
@@ -703,6 +705,18 @@ function pfBrokersEmpty(brokers) {
   return PF_BROKER_IDS.every((id) => !(brokers?.[id]?.rows?.length > 0));
 }
 
+function pfBundleRowCount(bundle) {
+  try {
+    const b = bundle?.brokers;
+    if (!b) return 0;
+    let n = 0;
+    for (const id of PF_BROKER_IDS) n += Array.isArray(b[id]?.rows) ? b[id].rows.length : 0;
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
 /** Ensure every known broker key exists with a `rows` array (mutates). @returns {boolean} whether structure changed */
 function ensurePfBrokerShape(brokers) {
   if (!brokers || typeof brokers !== "object") return false;
@@ -1248,7 +1262,43 @@ async function ownerPullFromServer() {
     }
     ensurePfBrokerShape(full.brokers);
     migratePortfolioBundleShape(full);
+    // SAFETY: do not wipe a non-empty local portfolio with an empty server snapshot.
+    // Also keep a local backup right before overwriting.
+    let prevRaw = "";
+    let prevNonEmpty = false;
     try {
+      prevRaw = (localStorage.getItem(K.pf) || "").trim();
+      if (prevRaw) {
+        const prev = JSON.parse(prevRaw);
+        if (prev?.v === 2 && prev.brokers && typeof prev.brokers === "object") {
+          ensurePfBrokerShape(prev.brokers);
+          prevNonEmpty = !pfBrokersEmpty(prev.brokers);
+        }
+      }
+    } catch {
+      prevRaw = "";
+      prevNonEmpty = false;
+    }
+    const serverEmpty = pfBrokersEmpty(full.brokers);
+    if (serverEmpty && prevNonEmpty) {
+      return {
+        ok: false,
+        reason: "server_empty_would_overwrite_local",
+        detail:
+          "Server snapshot is empty. For safety, the app refused to overwrite this browser’s non-empty local portfolio. Use Push this device to server (from the device that has the data), then Reload from server on other browsers.",
+      };
+    }
+    try {
+      if (prevRaw) {
+        try {
+          localStorage.setItem(
+            K.pfBackupBeforePull,
+            JSON.stringify({ t: new Date().toISOString(), raw: prevRaw.slice(0, 5_000_000) }),
+          );
+        } catch {
+          /* ignore */
+        }
+      }
       localStorage.setItem(K.pf, JSON.stringify(full));
     } catch {
       return { ok: false, reason: "local_storage" };
@@ -1265,7 +1315,7 @@ async function ownerPullFromServer() {
 async function ownerPushToServer() {
   if (_pfSharedBundle != null) return;
   const wk = getOwnerCloudWriteK();
-  if (!wk) return;
+  if (!wk) return { ok: false, reason: "no_write_key" };
   const bundle = loadPfBundle();
   try {
     const r = await fetch("/api/shared/portfolio", {
@@ -1276,11 +1326,12 @@ async function ownerPushToServer() {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) {
       status(String(j.detail || j.error || `HTTP ${r.status}`), document.documentElement.dataset.theme || "");
-      return;
+      return { ok: false, reason: "server", http: r.status, detail: String(j.detail || j.error || `HTTP ${r.status}`) };
     }
-    /* quiet success to avoid status-bar noise on every debounced auto-save */
+    return { ok: true, updated_at: String(j.updated_at || "") || "" };
   } catch (e) {
     status(e instanceof Error ? e.message : String(e), document.documentElement.dataset.theme || "");
+    return { ok: false, reason: "network", detail: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -2016,7 +2067,13 @@ function getOwnerSetupOneTimeError(sp) {
  * @returns {string}
  */
 function formatOwnerCloudPullErrorHtml(res) {
-  if (res.reason === "no_read_token" || res.reason === "local_storage" || res.reason === "network" || res.reason === "bad_bundle") {
+  if (
+    res.reason === "no_read_token" ||
+    res.reason === "local_storage" ||
+    res.reason === "network" ||
+    res.reason === "bad_bundle" ||
+    res.reason === "server_empty_would_overwrite_local"
+  ) {
     return `<p class="sml" role="alert">Could not load: ${esc(
       (res.detail || res.reason || "unknown") + (res.reason === "no_read_token" ? " (open the one-time owner link to store tokens in this browser)." : ""),
     )}</p>`;
@@ -3002,8 +3059,16 @@ function wire() {
       }
       const th = document.documentElement.dataset.theme || "";
       status("Pushing this device to server…", th);
-      await ownerPushToServer();
-      status("Push attempted — if Safari still shows 0 insurance rows, press Reload from server there.", th);
+      const res = await ownerPushToServer();
+      if (res && res.ok) {
+        const bundle = loadPfBundle();
+        status(
+          `Pushed to server · ${pfBundleRowCount(bundle)} row(s) · ${res.updated_at ? `server time ${res.updated_at}` : "ok"}`,
+          th,
+        );
+      } else {
+        status(`Push failed — ${String(res?.detail || res?.reason || "unknown error")}`, th);
+      }
     });
     $("btnPfCloudDisc")?.addEventListener("click", () => {
       if (!confirm("Disconnect cloud on this device? Local portfolio data stays in this browser; the server is unchanged.")) return;
