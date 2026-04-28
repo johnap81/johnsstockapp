@@ -2693,6 +2693,7 @@ function portfolioHtml() {
       <div class="rowgap mt" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
         <button type="button" class="btn" id="btnPfCloudSave">Save &amp; load from server</button>
         <button type="button" class="btn ghost" id="btnPfCloudReload">Reload from server</button>
+        <button type="button" class="btn ghost" id="btnPfCloudPush" title="Uploads this device’s current portfolio to the server (uses the write key saved on this device)">Push this device to server</button>
         <button type="button" class="btn ghost" id="btnPfCopyFamilyLink" title="Copies a read-only link to send in a private message">Copy family link</button>
         <button type="button" class="btn ghost" id="btnPfCloudDisc">Disconnect on this device</button>
       </div>
@@ -2989,6 +2990,20 @@ function wire() {
         }
         status("Reload failed — see banner", th);
       }
+    });
+    $("btnPfCloudPush")?.addEventListener("click", async () => {
+      if (_pfSharedBundle != null) {
+        status("Open normal portfolio (not family view) to push.");
+        return;
+      }
+      if (!isOwnerCloudSyncActive()) {
+        status("Connect with Save & load from server first.");
+        return;
+      }
+      const th = document.documentElement.dataset.theme || "";
+      status("Pushing this device to server…", th);
+      await ownerPushToServer();
+      status("Push attempted — if Safari still shows 0 insurance rows, press Reload from server there.", th);
     });
     $("btnPfCloudDisc")?.addEventListener("click", () => {
       if (!confirm("Disconnect cloud on this device? Local portfolio data stays in this browser; the server is unchanged.")) return;
