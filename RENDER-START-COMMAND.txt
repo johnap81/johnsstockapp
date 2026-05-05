@@ -1,0 +1,17 @@
+# — Must do first (or Render will have no real app) —
+# Open Terminal and run (from your project folder, the one with server.py next to the src folder):
+#
+#   git add server.py src/server.py render.yaml
+#   git status
+#   (you should SEE server.py under "to be committed" if it was missing before)
+#   git commit -m "Add server and Render entry for hosting"
+#   git push
+#
+# Then on github.com, open the repo: confirm you SEE server.py and src/server.py in the file list.
+
+# — Render → Settings (paste ONE line, no leading $) —
+
+sh -c "if [ -f src/server.py ]; then exec python src/server.py; else exec python server.py; fi"
+
+# Root Directory: leave empty OR set to "src" — the line above works for both.
+# After changes: Manual Deploy → Clear build cache & deploy (if you see that option).

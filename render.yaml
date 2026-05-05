@@ -1,0 +1,16 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# After connecting this repo: set Environment variables in the dashboard
+# (copy from your local .env — never commit .env). Render injects PORT automatically.
+
+services:
+  - type: web
+    name: johnsstockapp
+    # Repo root. Main app is server.py; entry is src/server.py (see startCommand).
+    rootDir: .
+    runtime: python
+    plan: free
+    # Fail the build if the real app was never committed (a common reason for "can't open server.py" on Render).
+    buildCommand: 'sh -c "test -f server.py && test -f src/server.py && echo stdlib only — no pip install || { echo Build failed: server.py and src/server.py must be committed and pushed to GitHub. >&2; exit 1; }"'
+    # If Root Directory is empty: run src/launcher. If it is set to src: run server.py in src (the launcher).
+    startCommand: 'sh -c "if [ -f src/server.py ]; then exec python src/server.py; else exec python server.py; fi"'
+    healthCheckPath: /api/health
