@@ -210,8 +210,12 @@ def json_response(handler: SimpleHTTPRequestHandler, status: int, payload: objec
     handler.wfile.write(data)
 
 
-def fetch_json(url: str, timeout_s: float = 15.0, extra: dict[str, str] | None = None) -> object:
-    """GET JSON from URL. Retries on 429/503 (rate limit / overload) with backoff."""
+def fetch_json(url: str, timeout_s: float = 12.0, extra: dict[str, str] | None = None) -> object:
+    """GET JSON from URL.
+
+    Important: for interactive UI endpoints we must fail fast. Long backoffs make `/api/quote` look
+    "stuck" and the browser refresh appears broken. We do at most 2 short retries on 429/503.
+    """
     h = {
         "User-Agent": "JohnsStockApp/2.0",
         "Accept": "application/json",
@@ -219,7 +223,7 @@ def fetch_json(url: str, timeout_s: float = 15.0, extra: dict[str, str] | None =
     if extra:
         h.update(extra)
     insecure = (env("INSECURE_SSL", "0") or "0").strip() == "1"
-    delays_429 = (1.2, 3.0, 6.0, 12.0, 20.0, 32.0)
+    delays_429 = (0.6, 1.2)
     attempt = 0
     while True:
         req = Request(url, headers=h)
@@ -3615,7 +3619,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "gist_configured": uses_gist,
                         "render_free_ephemeral_warning": _render_env_hint() and not uses_gist,
                     },
-                    "api_revision": 22,
+                    "api_revision": 23,
                 },
             )
 
@@ -4142,7 +4146,7 @@ def main() -> int:
         f"lsof -iTCP:{port} -sTCP:LISTEN  then kill that PID, and start this server again. GET /api/ai-commentary avoids POST.",
         flush=True,
     )
-    print("Health check: GET /api/health  →  expect api_revision: 22, llm_commentary, shared_family_portfolio.", flush=True)
+    print("Health check: GET /api/health  →  expect api_revision: 23, llm_commentary, shared_family_portfolio.", flush=True)
     t212_instruments_warmer_start(from_boot=True)
     try:
         httpd.serve_forever()
