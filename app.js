@@ -14,6 +14,12 @@ const K = {
   llmBannerDismiss: "jsa.llmBannerDismiss",
   /** Last successful GET /api/t212/rows `fetched_at` (ISO) for display next to Sync. */
   pfT212LastFetch: "jsa.pf.t212LastFetch",
+  /** Legacy (YYYY-MM-DD) — last time this device auto-refreshed portfolio market prices. */
+  pfAutoPxDay: "jsa.pf.autoPxDayV1",
+  /** ISO — last time this device auto-refreshed portfolio market prices. */
+  pfAutoPxIso: "jsa.pf.autoPxIsoV1",
+  /** Epoch ms — last time this device auto-refreshed portfolio market prices. */
+  pfAutoPxTs: "jsa.pf.autoPxTsV1",
   /**
    * Family read-only: long read token in session (same tab). Lets nav links keep `#/portfolio?view=family&token=…` after
    * leaving the page, so a bare `#/portfolio` tap does not show an empty local ledger.
@@ -1597,6 +1603,41 @@ function isSharedBundleAllLedgersEmpty(bundle) {
   return true;
 }
 
+function _familyPxCacheKey(tok) {
+  const t = String(tok || "").trim();
+  if (!t) return "";
+  // Avoid writing the raw token into the key name; use a short deterministic suffix.
+  let h = 0;
+  for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
+  return `jsa.pf.familyPxCache.v1.${String(h)}`;
+}
+
+function _loadFamilyPxCache(tok) {
+  const k = _familyPxCacheKey(tok);
+  if (!k) return null;
+  try {
+    const raw = sessionStorage.getItem(k);
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    if (!j || typeof j !== "object") return null;
+    if (typeof j.ts !== "number" || !j.bundle) return null;
+    if (j.bundle?.v !== 2 || typeof j.bundle?.brokers !== "object") return null;
+    return j;
+  } catch {
+    return null;
+  }
+}
+
+function _saveFamilyPxCache(tok, bundle) {
+  const k = _familyPxCacheKey(tok);
+  if (!k) return;
+  try {
+    sessionStorage.setItem(k, JSON.stringify({ ts: Date.now(), bundle }));
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
  * Family read-only: load server snapshot for `?view=family&token=…` in the hash, or recover from
  * a prior successful load in this tab (so Search → Portfolio does not show an empty ledger on phones).
@@ -1637,6 +1678,13 @@ async function applyPortfolioSharedFromHash(sp) {
   if (wantsFamily) {
     const { ok, updated_at: ua, detail, err, status: httpSt } = await fetchSharedFamilyPortfolio(tok);
     if (ok) {
+      // If this tab already refreshed market prices recently, keep showing that instead of reverting
+      // to the owner snapshot on every reopen.
+      const intervalMs = 60 * 60 * 1000; // 1 hour
+      const cached = _loadFamilyPxCache(tok);
+      if (cached && typeof cached.ts === "number" && Date.now() - cached.ts < intervalMs) {
+        _pfSharedBundle = JSON.parse(JSON.stringify(cached.bundle));
+      }
       try {
         sessionStorage.setItem(K.pfFamilyRead, tok);
         sessionStorage.setItem(K.pfFamilyMode, "1");
@@ -1751,6 +1799,12 @@ async function familyRefreshAllMarketPrices() {
     status("Not in family view");
     return;
   }
+  let tok = "";
+  try {
+    tok = (sessionStorage.getItem(K.pfFamilyRead) || "").trim();
+  } catch {
+    tok = "";
+  }
   const bundle = JSON.parse(JSON.stringify(_pfSharedBundle));
   let n = 0;
   for (const id of PF_BROKER_IDS) {
@@ -1760,6 +1814,7 @@ async function familyRefreshAllMarketPrices() {
     n += await applyLiveQuotesToRowsForBroker(bundle, id);
   }
   _pfSharedBundle = JSON.parse(JSON.stringify(bundle));
+  if (tok) _saveFamilyPxCache(tok, _pfSharedBundle);
   renderPf();
   status(n > 0 ? `Market prices updated (${n} quote run(s))` : "Market prices — no symbols updated (check API keys if empty)");
 }
@@ -1792,6 +1847,118 @@ async function familyReloadOwnerSnapshot() {
   renderPf();
   const when = ua ? ` · ${ua}` : "";
   status(`Owner snapshot reloaded${when}`);
+}
+
+let _pfAutoPxInFlight = false;
+
+function _todayYmdLocal() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
+function _readAutoPxTs() {
+  try {
+    const raw = (localStorage.getItem(K.pfAutoPxTs) || "").trim();
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  } catch {
+    /* ignore */
+  }
+  // Legacy: a day string means "already ran today"
+  try {
+    const day = (localStorage.getItem(K.pfAutoPxDay) || "").trim();
+    if (day && day === _todayYmdLocal()) {
+      const now = Date.now();
+      localStorage.setItem(K.pfAutoPxTs, String(now));
+      localStorage.setItem(K.pfAutoPxIso, new Date(now).toISOString());
+      return now;
+    }
+  } catch {
+    /* ignore */
+  }
+  return 0;
+}
+
+function _writeAutoPxStamp(ts) {
+  const t = Number(ts);
+  if (!Number.isFinite(t) || t <= 0) return;
+  try {
+    localStorage.setItem(K.pfAutoPxTs, String(Math.floor(t)));
+    localStorage.setItem(K.pfAutoPxIso, new Date(t).toISOString());
+    localStorage.setItem(K.pfAutoPxDay, _todayYmdLocal());
+  } catch {
+    /* ignore */
+  }
+}
+
+function paintPfAutoPxTimestamp() {
+  const el = $("pfAutoPxTime");
+  if (!(el instanceof HTMLElement)) return;
+  let iso = "";
+  try {
+    iso = (localStorage.getItem(K.pfAutoPxIso) || "").trim();
+  } catch {
+    iso = "";
+  }
+  if (!iso) {
+    el.textContent = "";
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  el.textContent = `Last auto refresh: ${formatServerIsoLocal(iso)}`;
+}
+
+async function maybeAutoRefreshPortfolioPrices() {
+  if (_pfAutoPxInFlight) return;
+  if (!navigator.onLine) return;
+  // Only auto-run on hosted pages (normal websites) — local dev can be spammy.
+  if (!isHostedWebApp()) return;
+  const intervalMs = 60 * 60 * 1000; // 1 hour per device
+  const lastTs = _readAutoPxTs();
+  if (lastTs && Date.now() - lastTs < intervalMs) return;
+
+  // Family read-only view: auto-refresh all market rows (they cannot persist to server anyway).
+  if (_pfSharedBundle) {
+    _pfAutoPxInFlight = true;
+    try {
+      status("Family: updating market prices…");
+      await familyRefreshAllMarketPrices();
+      _writeAutoPxStamp(Date.now());
+      paintPfAutoPxTimestamp();
+    } finally {
+      _pfAutoPxInFlight = false;
+    }
+    return;
+  }
+
+  const bundle = loadPfBundle();
+  if (!bundle?.brokers) return;
+  const brokerOrder = [PF_ZERODHA, PF_ETORO, PF_MF_COIN, PF_MF_KUVERA];
+  const todo = brokerOrder.filter((id) => Array.isArray(bundle.brokers[id]?.rows) && bundle.brokers[id].rows.length);
+  if (!todo.length) {
+    _writeAutoPxStamp(Date.now());
+    paintPfAutoPxTimestamp();
+    return;
+  }
+  _pfAutoPxInFlight = true;
+  try {
+    let n = 0;
+    for (const id of todo) {
+      status(`Auto prices: ${PF_BROKER_LABEL[id] || id}…`);
+      n += await applyLiveQuotesToRowsForBroker(bundle, id);
+    }
+    savePfBundle(bundle);
+    renderPf();
+    _writeAutoPxStamp(Date.now());
+    paintPfAutoPxTimestamp();
+    status(n > 0 ? `Auto prices updated (${n} quote run(s))` : "Auto prices: nothing updated (check symbols/exchange)");
+  } finally {
+    _pfAutoPxInFlight = false;
+  }
 }
 
 function getActiveBroker() {
@@ -2889,6 +3056,7 @@ function portfolioHtml() {
         <span class="sml muted pfT212SyncStamp" id="pfT212SyncTime" role="status" hidden></span>
         <button type="button" class="btn" id="btnPfPublish" title="Uploads this device’s portfolio to the server so family can open a read-only link (needs write key in Render)">Publish for family (server)</button>
         <button type="button" class="btn ghost" id="btnRef">Refresh prices</button>
+        <span class="sml muted pfAutoPxStamp" id="pfAutoPxTime" role="status" hidden></span>
         <button type="button" class="btn ghost" id="btnPfExport">Export CSV</button>
         <button type="button" class="btn ghost" id="btnPfJsonExport" title="All ledgers in one file — use to move data to phone or another browser">Backup all ledgers (JSON)</button>
         <button type="button" class="btn ghost" id="btnPfJsonRestore" title="Replaces entire portfolio from a JSON backup">Restore backup (JSON)</button>
@@ -3508,6 +3676,7 @@ function wire() {
       }
       renderPf();
       updateFamilyNavHrefs();
+      void maybeAutoRefreshPortfolioPrices();
     })();
     return;
   }
@@ -7013,6 +7182,7 @@ function renderPf() {
   syncPortfolioTabAria();
   paintPfAddFieldsMount();
   updatePfBrokerCaption();
+  paintPfAutoPxTimestamp();
   const b = getActiveBroker();
   if (b === PF_INSURANCE) {
     renderPfInsuranceTable(el);
