@@ -2469,13 +2469,22 @@ function setupInstall() {
   });
 }
 
-/* SW — on Render (or any `*.onrender.com`) we skip registration and clear old caches. A poisoned
-   precache (from earlier broken deploys) made `app.js` “half-load”: header OK, but `#/search`
-   `wire()` never bound — nav hash routing + search input did nothing. Localhost still uses SW. */
+/* SW — for public hosted domains we skip registration and clear old caches.
+   Why: a poisoned precache (from earlier broken deploys) made `app.js` “half-load”: header OK,
+   but `#/search` `wire()` never bound — nav hash routing + search input did nothing.
+   We keep SW only for localhost / LAN usage (dev + same-WiFi phone). */
 async function setupSw() {
   if (!("serviceWorker" in navigator)) return;
-  const isRenderHost = /\.onrender\.com$/i.test(location.hostname);
-  if (isRenderHost) {
+  const host = (location.hostname || "").trim().toLowerCase();
+  const isLocal =
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    /^10\.\d+\.\d+\.\d+$/.test(host) ||
+    /^192\.168\.\d+\.\d+$/.test(host) ||
+    /^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$/.test(host);
+  const isPublicHosted = !isLocal;
+  if (isPublicHosted) {
     try {
       const regs = await navigator.serviceWorker.getRegistrations();
       await Promise.all(regs.map((r) => r.unregister()));
