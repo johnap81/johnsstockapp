@@ -1807,16 +1807,22 @@ async function familyRefreshAllMarketPrices() {
   }
   const bundle = JSON.parse(JSON.stringify(_pfSharedBundle));
   let n = 0;
+  let errSum = 0;
   for (const id of PF_BROKER_IDS) {
     const rows = bundle.brokers[id]?.rows;
     if (!Array.isArray(rows) || !rows.length) continue;
     status(`Prices: ${PF_BROKER_LABEL[id] || id}…`);
-    n += await applyLiveQuotesToRowsForBroker(bundle, id);
+    const r = await applyLiveQuotesToRowsForBroker(bundle, id);
+    n += r.n;
+    errSum += r.err;
   }
   _pfSharedBundle = JSON.parse(JSON.stringify(bundle));
   if (tok) _saveFamilyPxCache(tok, _pfSharedBundle);
   renderPf();
-  status(n > 0 ? `Market prices updated (${n} quote run(s))` : "Market prices — no symbols updated (check API keys if empty)");
+  if (n > 0 && errSum === 0) status(`Market prices updated (${n} quote run(s))`);
+  else if (n > 0 && errSum > 0) status(`Market prices partially updated (${n} ok, ${errSum} failed)`);
+  else if (errSum > 0) status(`Market prices failed (${errSum} error(s)) — check status lines above or GET /api/health`);
+  else status("Market prices — no symbols updated (check API keys if empty)");
 }
 
 /** Re-download the last snapshot the owner published (same token as in the URL). */
@@ -1947,15 +1953,21 @@ async function maybeAutoRefreshPortfolioPrices() {
   _pfAutoPxInFlight = true;
   try {
     let n = 0;
+    let errSum = 0;
     for (const id of todo) {
       status(`Auto prices: ${PF_BROKER_LABEL[id] || id}…`);
-      n += await applyLiveQuotesToRowsForBroker(bundle, id);
+      const r = await applyLiveQuotesToRowsForBroker(bundle, id);
+      n += r.n;
+      errSum += r.err;
     }
     savePfBundle(bundle);
     renderPf();
     _writeAutoPxStamp(Date.now());
     paintPfAutoPxTimestamp();
-    status(n > 0 ? `Auto prices updated (${n} quote run(s))` : "Auto prices: nothing updated (check symbols/exchange)");
+    if (n > 0 && errSum === 0) status(`Auto prices updated (${n} quote run(s))`);
+    else if (n > 0 && errSum > 0) status(`Auto prices: ${n} ok, ${errSum} failed`);
+    else if (errSum > 0) status(`Auto prices: ${errSum} failed — check quote providers /api/health`);
+    else status("Auto prices: nothing updated (check symbols/exchange)");
   } finally {
     _pfAutoPxInFlight = false;
   }
@@ -7588,10 +7600,10 @@ function rowMatchesT212QuoteKey(row, key) {
 /** Update `last` (and optional `pfKind`) from `/api/quote` for all rows in a broker. */
 async function applyLiveQuotesToRowsForBroker(bundle, b) {
   const rows = bundle.brokers[b].rows;
-  if (!rows.length) return 0;
-  /** Yahoo `*-USD` is USD / coin; some rows get USD→row-ccy using ECB/Frankfurter. */
+  if (!rows.length) return { n: 0, err: 0 };
+  /** ECB cross-rates: convert quote currency → row `ccy` (Zerodha INR vs USD quotes, T212 GBP rows, crypto, etc.). */
   let fxEur = null;
-  if (b === PF_CRYPTO || b === PF_T212) {
+  if (isStockLikePfBroker(b)) {
     try {
       fxEur = await fetchEurFxTable();
     } catch {
@@ -7600,6 +7612,7 @@ async function applyLiveQuotesToRowsForBroker(bundle, b) {
   }
   const eurPer = fxEur?.eur_per_unit;
   const usdToEur = eurPer ? eurPerUnitToEur(eurPer, "USD") : undefined;
+  const symMatch = (a, b2) => String(a || "").trim().toUpperCase() === String(b2 || "").trim().toUpperCase();
 
   /** @type { { k: string, row0: (typeof rows)[0] }[] } */
   const iter = [];
@@ -7613,13 +7626,19 @@ async function applyLiveQuotesToRowsForBroker(bundle, b) {
       iter.push({ k, row0 });
     }
   } else {
-    for (const s of new Set(rows.map((r) => r.sym).filter(Boolean))) {
-      const row0 = rows.find((r) => r.sym === s) || null;
-      iter.push({ k: s, row0 });
+    const seenSym = new Set();
+    for (const row0 of rows) {
+      const raw = String(row0.sym || "").trim();
+      if (!raw) continue;
+      const uk = raw.toUpperCase();
+      if (seenSym.has(uk)) continue;
+      seenSym.add(uk);
+      iter.push({ k: raw, row0 });
     }
   }
-  if (!iter.length) return 0;
+  if (!iter.length) return { n: 0, err: 0 };
   let n = 0;
+  let errCount = 0;
   for (let i = 0; i < iter.length; i++) {
     const { k, row0 } = iter[i];
     const s = b === PF_T212 && row0 ? String(row0.sym || "").trim() : k;
@@ -7634,24 +7653,45 @@ async function applyLiveQuotesToRowsForBroker(bundle, b) {
       b === PF_T212 && row0 && isCryptoLikeT212Row(row0)
         ? buildQuoteUrlParams(s, ex, PF_CRYPTO)
         : buildQuoteUrlParams(s, ex, b);
+    u.set("fresh", "1");
     try {
-      const r = await fetch(`/api/quote?${u}`);
-      if (!r.ok) continue;
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 35000);
+      const r = await fetch(`/api/quote?${u}`, { cache: "no-store", signal: ctl.signal });
+      clearTimeout(t);
+      if (!r.ok) {
+        errCount++;
+        let detail = `HTTP ${r.status}`;
+        try {
+          const ej = await r.json();
+          if (ej && typeof ej.detail === "string" && ej.detail.trim()) detail = ej.detail.trim();
+          else if (ej && typeof ej.error === "string" && ej.error.trim()) detail = ej.error.trim();
+        } catch {
+          /* ignore */
+        }
+        status(`Quote failed (${s}): ${detail}`);
+        continue;
+      }
       const j = await r.json();
       const q = Array.isArray(j) ? j[0] : null;
       const px = num(q?.price);
       if (px > 0) {
         const qCcy = String(q?.currency || "").trim();
         rows.forEach((row) => {
-          const same = b === PF_T212 && row0 ? rowMatchesT212QuoteKey(row, t212QuoteKey(row0)) : row.sym === s;
+          const same =
+            b === PF_T212 && row0
+              ? rowMatchesT212QuoteKey(row, t212QuoteKey(row0))
+              : symMatch(row.sym, s);
           if (!same) return;
           const ccyN = normalizeCcyForFx(row.ccy);
           let v = px;
           if (b === PF_T212) {
             if (isCryptoLikeT212Row(row) && eurPer && usdToEur != null && ccyN === "EUR") v = px * usdToEur;
             else v = eurPer ? quotePriceToRowCcy(px, qCcy || ccyN, row.ccy, eurPer) : px;
-          } else if (eurPer && usdToEur != null && ccyN === "EUR" && b === PF_CRYPTO) {
-            v = px * usdToEur;
+          } else if (b === PF_CRYPTO) {
+            v = eurPer ? quotePriceToRowCcy(px, qCcy || "USD", row.ccy, eurPer) : px;
+          } else {
+            v = eurPer ? quotePriceToRowCcy(px, qCcy || ccyN, row.ccy, eurPer) : px;
           }
           row.last = v;
         });
@@ -7664,12 +7704,14 @@ async function applyLiveQuotesToRowsForBroker(bundle, b) {
           if (same) row.pfKind = qt;
         });
       }
-    } catch {
-      /* ignore */
+    } catch (e) {
+      errCount++;
+      const msg = e && e.name === "AbortError" ? "timed out (35s)" : String(e?.message || e || "error");
+      status(`Quote failed (${s}): ${msg}`);
     }
     await new Promise((res) => setTimeout(res, 300));
   }
-  return n;
+  return { n, err: errCount };
 }
 
 function normalizeT212SyncedRow(r) {
@@ -7768,10 +7810,17 @@ async function refreshPf() {
       status(e instanceof Error ? e.message : String(e));
     }
     const b2 = loadPfBundle();
-    const nQ = await applyLiveQuotesToRowsForBroker(b2, PF_CRYPTO);
+    const q = await applyLiveQuotesToRowsForBroker(b2, PF_CRYPTO);
     savePfBundle(b2);
     renderPf();
-    status(nQ > 0 ? `Crypto updated · live prices for ${nQ} symbol(s). EUR cards use your row currency. · ${PF_BROKER_LABEL[PF_CRYPTO]}` : "Crypto: sync done — add BTC/ETH rows or check quote keys if prices stay 0");
+    const nQ = q.n;
+    const nErr = q.err;
+    if (nQ > 0 && nErr === 0)
+      status(`Crypto updated · live prices for ${nQ} symbol(s). EUR cards use your row currency. · ${PF_BROKER_LABEL[PF_CRYPTO]}`);
+    else if (nQ > 0 && nErr > 0)
+      status(`Crypto partially updated · ${nQ} ok, ${nErr} failed · ${PF_BROKER_LABEL[PF_CRYPTO]}`);
+    else if (nErr > 0) status(`Crypto: ${nErr} quote error(s) — check /api/health · ${PF_BROKER_LABEL[PF_CRYPTO]}`);
+    else status("Crypto: sync done — add BTC/ETH rows or check quote keys if prices stay 0");
     return;
   }
   if (b === PF_T212) {
@@ -7796,12 +7845,16 @@ async function refreshPf() {
     status("Nothing to refresh");
     return;
   }
-  const nQ = await applyLiveQuotesToRowsForBroker(b3, b);
+  const q = await applyLiveQuotesToRowsForBroker(b3, b);
   savePfBundle(b3);
   renderPf();
-  status(
-    nQ > 0 ? `Refresh done · live prices for ${nQ} symbol(s) · ${PF_BROKER_LABEL[b]}` : `Refresh done · no prices updated · ${PF_BROKER_LABEL[b]}`,
-  );
+  const nQ = q.n;
+  const nErr = q.err;
+  if (nQ > 0 && nErr === 0) status(`Refresh done · live prices for ${nQ} symbol(s) · ${PF_BROKER_LABEL[b]}`);
+  else if (nQ > 0 && nErr > 0)
+    status(`Refresh done · ${nQ} symbol(s) updated, ${nErr} quote(s) failed · ${PF_BROKER_LABEL[b]}`);
+  else if (nErr > 0) status(`Refresh failed · ${nErr} quote error(s) — check /api/health · ${PF_BROKER_LABEL[b]}`);
+  else status(`Refresh done · no prices updated · ${PF_BROKER_LABEL[b]}`);
 }
 
 /** Split one line on comma or semicolon with RFC-style quoted fields (`sep` is `,` or `;`). */
